@@ -1,0 +1,9 @@
+case,expected,shape_ok,nan_mask_same,min_max_rel_err,max_max_rel_err,range_max_rel_err,volume_max_rel_err,PASS,survivors,as_expected
+GPU features_kmajor,PASS,True,True,0.0,0.0,0.0,0.0,True,,True
+GPU features_smajor,PASS,True,True,0.0,0.0,0.0,0.0,True,,True
+NEG: boundary >= bug,FAIL,True,False,,,,,False,,True
+NEG: wrong window length,FAIL,True,False,,,,,False,,True
+CPU direct MT,PASS,True,True,0.0,0.0,0.0,0.0,True,,True
+CPU optimized O(N*K),PASS,True,True,0.0,0.0,0.0,1.250015088771761e-06,True,,True
+GPU rarity counts (exact),PASS,,,,,,,True,,True
+GPU local_peaks flags (exact),PASS,,,,,,,True,1323.0,True

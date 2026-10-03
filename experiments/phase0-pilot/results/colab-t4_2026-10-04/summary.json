@@ -1,0 +1,122 @@
+{
+  "env": {
+    "gpu_name": "Tesla T4",
+    "gpu_sm_count": 40,
+    "compute_capability": "7.5",
+    "gpu_memory_gib": 14.56,
+    "nvidia_smi": "Tesla T4, 580.82.07, 15360 MiB",
+    "gpu_state_start": "300 MHz, 405 MHz, 35, 10.03 W",
+    "cuda_runtime": 13000,
+    "cuda_driver": 13000,
+    "cpu_model": "Intel(R) Xeon(R) CPU @ 2.00GHz",
+    "cpu_logical_cores": 2,
+    "numba_threads": 2,
+    "python": "3.13.15",
+    "cupy": "14.0.1",
+    "numpy": "2.1.3",
+    "numba": "0.61.2",
+    "pandas": "2.2.3",
+    "dtype": "float32 features on CPU and GPU",
+    "host_memory_for_e2e": "pageable, preallocated",
+    "quick_mode": false,
+    "fake_gpu": false,
+    "gpu_state_before_sweep": "1215 MHz, 5000 MHz, 59, 30.85 W",
+    "gpu_state_after_sweep": "1590 MHz, 5000 MHz, 54, 38.36 W"
+  },
+  "data": "real_market",
+  "filled_bars": {
+    "1m": 0,
+    "1s": 0
+  },
+  "model": {
+    "T0_ms": 0.1110019971553264,
+    "BW_H2D_GBps": 4.720391317257747,
+    "BW_D2H_GBps": 4.267337887686486,
+    "R_gpu_evals_per_ns": 131.62067975845096,
+    "cpu1t_c0_ms": 0.004375996206895089,
+    "cpu1t_ns_per_candidate": 0.9162267492529749,
+    "cpu1t_ns_per_eval": 1.3526993278338924,
+    "cpumt_ns_per_eval": 1.613797126194116,
+    "w_star_vs_cpu1t": 3.9962371421881024,
+    "w_star_vs_cpumt": -3.3168075211551513
+  },
+  "w_star_measured": {
+    "cpu1t": 2.853672072788811,
+    "cpumt": -Infinity
+  },
+  "winner_accuracy": {
+    "cpu1t": 0.8333333333333334,
+    "cpumt": 1.0
+  },
+  "event_results": {
+    "news (post-hoc list)": {
+      "events": 5,
+      "hit": 4,
+      "chance_mean_hits": 0.087,
+      "p_value": "not interpretable (list built after seeing an earlier run)",
+      "hit_events": "Matrixport note: SEC to reject ETFs; BTC drops; SEC X account hacked: fake ETF approval post; BTC to ~$64k; Coinbase outage; BTC record ~$69.2k then -10% flush"
+    },
+    "macro (pre-registered rule)": {
+      "events": 5,
+      "hit": 1,
+      "chance_mean_hits": 0.089,
+      "p_value": 0.0858,
+      "hit_events": "US CPI (Jan)"
+    }
+  },
+  "cold_start": {
+    "features_kmajor (NVRTC compile + launch)": {
+      "first_call_ms": 420.41284999999107,
+      "second_call_ms": 0.949950999995508
+    }
+  },
+  "breakdown_errors": {},
+  "required": {
+    "real GPU run (not emulated)": true,
+    "correctness gate passed and both negative controls caught": true,
+    "all GPU output paths give the CPU top-20": true,
+    "real market data used": true,
+    ">= 3 sizes and >= 10 repetitions (or flagged)": true,
+    "kernel / E2E / dispatch overhead separated": true,
+    "E2E segments separated on every dataset": true,
+    "injection experiment completed for every (L, q)": true,
+    "same-workload and same-budget experiments both completed": true
+  },
+  "hypotheses": [
+    {
+      "hypothesis": "H1 crossover window length w* predicted within 2x",
+      "verdict": "SUPPORTED",
+      "evidence": "w* measured 2.85 vs predicted 4.00 (vs CPU 1T); (secondary) winner accuracy 83%"
+    },
+    {
+      "hypothesis": "H2 D2H dominates the GPU part of feature-returning E2E at K=15",
+      "verdict": "SUPPORTED",
+      "evidence": "1s, N=604,800: D2H 33.1 ms of H2D+kernel+D2H 40.3 ms = 82%"
+    },
+    {
+      "hypothesis": "H3 candidates-only output >= 2x faster than features output",
+      "verdict": "SUPPORTED",
+      "evidence": "1s, N=604,800: path1 2547.2 -> path2 82.7 (30.8x: GPU sort + 16->4 B) -> path3 38.5 ms (2.1x: no count D2H / CPU peaks); total 66.1x"
+    },
+    {
+      "hypothesis": "H4 start-major slowdown ~ K*max(w)/sum(w)",
+      "verdict": "SUPPORTED",
+      "evidence": "measured 3.58x vs predicted 4.41x"
+    },
+    {
+      "hypothesis": "H5 estimated length ~ (1/3..1) x event length",
+      "verdict": "SUPPORTED",
+      "evidence": "median estimated length / L (q=16): L=6: 0.58, L=30: 0.34, L=120: 0.41"
+    },
+    {
+      "hypothesis": "H6 a detection threshold exists within the q range",
+      "verdict": "SUPPORTED",
+      "evidence": "L=6: q=2.0:0%, q=4.0:0%, q=8.0:0%, q=16.0:30%, q=32.0:60%; L=30: q=2.0:0%, q=4.0:0%, q=8.0:15%, q=16.0:65%, q=32.0:95%; L=120: q=2.0:0%, q=4.0:0%, q=8.0:30%, q=16.0:85%, q=32.0:95%"
+    },
+    {
+      "hypothesis": "H7 same budget: more re-evaluations and a ~1/sqrt(n) narrower CI on GPU",
+      "verdict": "SUPPORTED",
+      "evidence": "60 s budget: trials GPU/CPU = 53.0x, CI width CPU/GPU = 6.73 (sqrt prediction 7.28); same-workload hit agreement 100%"
+    }
+  ]
+}

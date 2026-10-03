@@ -1,0 +1,26 @@
+# Private: internal design and planning notes (never commit)
+internal/
+
+# Raw and cached data (re-downloadable)
+data/
+*.zip
+*.parquet
+*.lz4
+
+# Large or intermediate experiment outputs; publish curated results only
+results/**/raw/
+
+# Python and notebooks
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+*.egg-info/
+
+# Credentials
+.env
+.aws/
+
+# Local notebook runs (Colab results are stored under experiments/*/results/)
+pilot_results/
+pilot_results.zip

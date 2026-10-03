@@ -1,0 +1,3 @@
+impl,trials,seconds,ms_per_trial,hits,hit_agreement_with_cpu
+cpu_optimized,40,19.709427844999936,492.7356961249984,4,1.0
+gpu_path3,40,0.42351642100004483,10.58791052500112,4,1.0
