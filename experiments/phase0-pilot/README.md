@@ -8,6 +8,7 @@ budget buys. Results write-up: [`docs/phase0.md`](../../docs/phase0.md).
 |---|---|
 | [`pilot.py`](pilot.py) | Notebook source in percent format. Edit this file, then regenerate the `.ipynb` |
 | [`pilot.ipynb`](pilot.ipynb) | Colab notebook (environment → data → CPU/GPU implementations → correctness gate → events → injection → time budget → cost model → sweep → breakdown → layout → verdicts) |
+| [`make_figures.py`](make_figures.py) | Redraws the rarity maps used in the docs (`docs/assets/phase0/`) with aligned time axes, from the same computation on the CPU |
 | [`requirements.txt`](requirements.txt) | Python dependencies for local runs |
 | [`results/colab-t4_2026-10-04/`](results/colab-t4_2026-10-04/) | Reference run on Colab Tesla T4: CSV/JSON outputs and figures |
 

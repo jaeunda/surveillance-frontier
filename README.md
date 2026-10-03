@@ -21,12 +21,16 @@ how many evaluations fit into the time available.
 - **H3.** A GPU implementation with identical results covers a wider and finer search in the same time.
 - **H4.** At equal wall-clock time, the GPU's estimate of the bound is closer to a high-budget reference.
 
-## Phase 0 result
+## Latest result — Phase 0
 
-<p align="center"><img src="experiments/phase0-pilot/results/colab-t4_2026-10-04/figs/fig6_budget.png" width="100%" alt="Detector re-evaluations and estimate precision within a fixed time budget, CPU vs GPU"></p>
+<p align="center"><img src="docs/assets/phase0/sec_event_1s.png" width="100%" alt="Price, volume, and the multi-scale rarity map around the fake SEC post on 2024-01-09, 1-second bars"></p>
 
-A pilot scanned every (start, length) window of a Bitcoin price series for unusual price-and-volume intervals, on a
-Colab Tesla T4 against an optimized CPU baseline:
+The fake SEC post on 2024-01-09 at 1-second resolution. Each column is a moment, each row a window length from 2 s
+to 4 min; darker means the price range and the volume of that window were both rarer. The jump (21:12), the
+pullback (21:17), and the drop (21:25) appear as three separate cones, out of 9 million windows scored for the week.
+
+The pilot scanned every (start, length) window of a Bitcoin price series in this way, on a Colab Tesla T4 against
+an optimized CPU baseline:
 
 - After a correctness gate (including two deliberately broken kernels that it caught), CPU and GPU return the same
   top-20 intervals; the top three sit within 10 minutes of real news events.
@@ -48,7 +52,7 @@ That last point turned a speed comparison into this project's question. Full wri
 ## Repository layout
 
 ```text
-docs/                       phase write-ups (phase0.md) and references (references.md)
+docs/                       phase write-ups (phase0.md), references (references.md), figures (assets/)
 experiments/phase0-pilot/   pilot notebook (.py source + generated .ipynb) and results
 tools/                      notebook converter, GPU-free dry-run runner, CPU stand-in for CuPy (fakecupy)
 ```

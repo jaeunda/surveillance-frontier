@@ -57,11 +57,17 @@ from a subtly wrong one.
 
 ## 2. Does the map find anything real?
 
-<p align="center"><img src="../experiments/phase0-pilot/results/colab-t4_2026-10-04/figs/fig2_sec_zoom_1m.png" width="80%" alt="Price, volume, and rarity map around the fake SEC post"></p>
+<p align="center"><img src="assets/phase0/sec_event_1m.png" width="90%" alt="Price, volume, and rarity map around the fake SEC post, 1-minute bars"></p>
 
 Around the fake SEC post the rarity map lights up as a cone: short windows react first, and longer windows that
 contain the event stay rare for longer. The horizontal axis is the window centre, the vertical axis the window
-length.
+length, and darker means rarer.
+
+At 1-second resolution the same event splits into three cones: the jump at 21:12, the pullback at 21:17, and the
+drop at 21:25. Raising the resolution multiplies the number of windows by 60, which is where the GPU starts to
+matter.
+
+<p align="center"><img src="assets/phase0/sec_event_1s.png" width="90%" alt="The same event at 1-second resolution"></p>
 
 Over the whole quarter, the three highest-ranked episodes lie within 10 minutes of the Matrixport note on ETF
 rejection (01-03), the Coinbase outage near $64k (02-28), and the SEC post (01-09). **Four of five** listed news
@@ -197,4 +203,7 @@ Written before the run; all criteria are in the notebook header.
 - Injected events are synthetic and multiply prices without any market reaction. Ranks are taken over the whole
   quarter, so volatile periods dominate the top of the list.
 - The news-event list was compiled after an earlier run; only the rule-based macro list supports a p-value.
+- The rarity maps in this document are redrawn by [`make_figures.py`](../experiments/phase0-pilot/make_figures.py) from
+  the same computation on the CPU (ranks are integers and matched the GPU exactly). In the notebook's own Figures
+  2-4 a colour bar narrows only the map panel, so the dashed event line appears slightly shifted between panels.
 - Nothing here judges whether any trading was manipulative.
