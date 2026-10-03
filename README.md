@@ -4,6 +4,7 @@
 change that?** Evaluating a policy means re-running its detector over many scenarios; this project measures how far
 and how finely that search can go on CPUs and GPUs, using market surveillance as the first domain.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3-blue)
 ![CUDA](https://img.shields.io/badge/CUDA-C%2B%2B%20kernels-76B900)
 ![Status](https://img.shields.io/badge/phase%200-complete-success)
@@ -75,6 +76,10 @@ python3 tools/py2nb.py experiments/phase0-pilot/pilot.py experiments/phase0-pilo
 - No real account is labeled as a manipulator; publicly reported incidents are used only to sanity-check detectors.
 - Background, data sources, and related work: [docs/references.md](docs/references.md).
 
-## License
+## Data and license
 
-TBD.
+Code and documentation are released under the [MIT License](LICENSE).
+
+Market data comes from the [Binance public data archive](https://data.binance.vision) and is downloaded at run
+time; no raw market data is stored in this repository. Stored results contain only values derived from it (rarity
+scores, timings, summary statistics) and figures plotted from it, which remain subject to the data provider's terms.
