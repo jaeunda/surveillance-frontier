@@ -8,6 +8,7 @@ budget buys. Results write-up: [`docs/phase0.md`](../../docs/phase0.md).
 |---|---|
 | [`pilot.py`](pilot.py) | Notebook source in percent format. Edit this file, then regenerate the `.ipynb` |
 | [`pilot.ipynb`](pilot.ipynb) | Colab notebook (environment → data → CPU/GPU implementations → correctness gate → events → injection → time budget → cost model → sweep → breakdown → layout → verdicts) |
+| [`requirements.txt`](requirements.txt) | Python dependencies for local runs |
 | [`results/colab-t4_2026-10-04/`](results/colab-t4_2026-10-04/) | Reference run on Colab Tesla T4: CSV/JSON outputs and figures |
 
 ## Run on Colab
@@ -29,7 +30,7 @@ python3 tools/py2nb.py experiments/phase0-pilot/pilot.py experiments/phase0-pilo
 ## Local dry run (no GPU)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install numpy numba pandas matplotlib scipy requests
+python3 -m venv .venv && .venv/bin/pip install -r experiments/phase0-pilot/requirements.txt
 .venv/bin/python tools/run_notebook.py experiments/phase0-pilot/pilot.ipynb /tmp/pilot-dry
 ```
 
@@ -50,7 +51,7 @@ meaningless.**
 | `sweep.csv` | 16 | CPU direct / CPU optimized / GPU kernel / GPU end-to-end over N × window sets |
 | `e2e_breakdown.csv` | 17 | Per-segment timings of the CPU-only path and three GPU output paths (H2, H3) |
 | `layout_blocksize.csv` | 18 | Thread layout × block size (H4) |
-| `hypotheses.csv`, `summary.json`, `progress.json` | 19 | Verdicts, run summary, completed sections |
+| `hypotheses.csv`, `summary.json` | 19 | Verdicts and run summary |
 | `figs/` | 11–18 | Figures 1–9 |
 
 ## Data and scope

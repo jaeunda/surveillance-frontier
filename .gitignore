@@ -8,7 +8,7 @@ data/
 *.lz4
 
 # Large or intermediate experiment outputs; publish curated results only
-results/**/raw/
+**/results/**/raw/
 
 # Python and notebooks
 __pycache__/

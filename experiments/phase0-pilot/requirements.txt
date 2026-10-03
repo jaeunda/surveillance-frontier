@@ -1,0 +1,7 @@
+numpy
+numba
+pandas
+matplotlib
+scipy
+requests
+# GPU runs (Colab installs it automatically): cupy-cuda12x
