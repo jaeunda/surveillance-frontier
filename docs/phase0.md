@@ -119,7 +119,7 @@ Three GPU variants return different amounts of data. All three produce the same 
 
 | 1-second data, N = 604,800 | Total | Largest part |
 |---|---|---|
-| CPU only (2 threads) | 3,480 ms | ranking and candidate selection on the CPU (2,490 ms) |
+| CPU only (**direct** scan, 2 threads; not the optimized baseline) | 3,480 ms | ranking and candidate selection on the CPU (2,490 ms) |
 | (1) GPU computes features, CPU does the rest | 2,547 ms | the same CPU ranking (2,478 ms) |
 | (2) GPU also ranks, CPU selects candidates | 82.7 ms | GPU sort (27.9 ms), CPU selection (40.1 ms) |
 | (3) GPU does everything, returns only candidates | **38.5 ms** | GPU sort (27.9 ms, 72%) |
@@ -184,8 +184,8 @@ Written before the run; all criteria are in the notebook header.
 
 - **The kernel is not the problem.** After moving everything to the GPU, ranking and data movement dominate. Work on
   performance has to look at the whole pipeline and at what is sent back, not at the kernel alone.
-- **The CPU baseline has to be strong.** The optimized CPU is 3.6x faster than the direct scan, and every GPU claim
-  above is made against it. Its ranking step still runs single-threaded in NumPy, so the next phase writes the CPU
+- **The CPU baseline has to be strong.** The optimized CPU is 3.6x faster than the direct scan. The kernel and
+  same-budget comparisons above use it; the CPU-only row of section 4 does not (see the correction below). Its ranking step still runs single-threaded in NumPy, so the next phase writes the CPU
   baseline in C++ with parallel sorting.
 - **The gate stays.** Correctness checks with deliberately broken variants run before every timing.
 - **The real question is evaluation under a time budget.** Section 5 is the seed of this project: when a detector or
@@ -207,3 +207,16 @@ Written before the run; all criteria are in the notebook header.
   the same computation on the CPU (ranks are integers and matched the GPU exactly). In the notebook's own Figures
   2-4 a colour bar narrows only the map panel, so the dashed event line appears slightly shifted between panels.
 - Nothing here judges whether any trading was manipulative.
+
+## Corrections (2026-10-07)
+
+- The CPU-only path of section 4 (3,480 ms) uses the **direct** multi-threaded scan, not the optimized one. An
+  earlier README summary presented "3.5 s → 38.5 ms" as a comparison with the optimized CPU; it is not. The
+  candidates-only GPU path is 66x faster than GPU features with CPU ranking (2,547 → 38.5 ms), which is a comparison
+  between GPU paths. An end-to-end comparison with the optimized CPU baseline was not measured in Phase 0.
+- The same-budget result (53x more trials in 60 s, section 5) does use the optimized scan, but each CPU trial re-runs
+  the full detector with single-threaded NumPy ranking, on two logical cores. Phase 1 shows that a full re-run is not
+  the CPU's floor (tail ranking and incremental evaluation give identical results for a fraction of the work), so
+  53x is a measured ratio for this setup, not a general CPU/GPU comparison.
+- In the GPU path comparison, (1) → (2) changes where sorting runs and the output size at the same time, so the
+  31x step cannot be attributed to the smaller transfer alone.

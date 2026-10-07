@@ -24,3 +24,9 @@ __pycache__/
 # Local notebook runs (Colab results are stored under experiments/*/results/)
 pilot_results/
 pilot_results.zip
+
+# C++ build output
+build/
+
+# Smoke runs (run_sweep.py --quick) are not published
+experiments/*/results/smoke_*/

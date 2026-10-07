@@ -1,0 +1,44 @@
+{
+  "_about": "Phase 1 stress-testing tasks. Target quantity: the conditional detection rate p(L, q | x) of a policy on one fixed series x, i.e. the share of all event positions at which the policy reports a new episode (engine/include/sf/evaluate.hpp). It is not a damage bound and says nothing about other series. A cell is one (length L, strength q); a trial is one random position in one cell and serves every policy of the task at once. Tasks derive from base_task by changing the fields they list; ladders change one factor of base_task at a time. Units (series per trial) are a separate multiplier, reported apart and assumed linear.",
+  "series_bars": {"1m-quarter": 131040, "1s-week": 604800},
+  "policy_grids": {
+    "P1": {"K": [15], "s_min": [2.0], "episode_gap": [60]},
+    "P24": {"K": [8, 15], "s_min": [1.5, 2.0, 2.5, 3.0], "episode_gap": [30, 60, 120]},
+    "P105": {"K": [4, 8, 15], "s_min": [1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0], "episode_gap": [15, 30, 60, 120, 240]}
+  },
+  "base_task": {
+    "policies": "P1",
+    "lengths": [2, 4, 8, 16, 32, 64, 128, 256],
+    "strengths": {"from": 1, "to": 256, "ratio": 1.4142135623730951},
+    "half_width": 0.02,
+    "coverage": "pointwise"
+  },
+  "tasks": {
+    "T1-curve": {
+      "_question": "How does the detection rate of the default policy change with event length and strength?"
+    },
+    "T2-policy-map": {
+      "_question": "The same curve for 24 policy settings, with all cells and policies covered at once.",
+      "policies": "P24",
+      "coverage": "simultaneous"
+    }
+  },
+  "ladders": {
+    "half_width": [0.05, 0.02, 0.01],
+    "strength_ratio": [2.0, 1.4142135623730951, 1.189207115002721],
+    "lengths": [[30], [2, 8, 32, 128], [2, 4, 8, 16, 32, 64, 128, 256], [2, 3, 4, 6, 8, 11, 16, 23, 32, 45, 64, 91, 128, 181, 256]],
+    "policies": ["P1", "P24", "P105"],
+    "coverage": ["pointwise", "simultaneous"]
+  },
+  "units": [1, 4, 16],
+  "validation_task": {
+    "_about": "Run end to end on the reference machine to check the projection (F4). Cell by cell, fixed trial counts.",
+    "series": "1s-week",
+    "policies": "P24",
+    "lengths": [6, 30, 120],
+    "strengths": [8, 32, 128],
+    "half_width": 0.05,
+    "coverage": "pointwise",
+    "methods": ["shared", "tail", "incremental"]
+  }
+}
