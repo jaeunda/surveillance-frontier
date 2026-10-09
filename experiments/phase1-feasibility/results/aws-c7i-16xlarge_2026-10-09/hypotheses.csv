@@ -1,0 +1,7 @@
+id,measured,criterion,supported
+G,0 mismatching trials in 2112 verified trials,"0 (real data, all methods vs full, 24 policies)",True
+F1,"incremental / full at N = 604,800, K = 15: 349x",>= 10x,True
+F2,"full 14%, incremental 19%, tail 15%","< 20% at N = 604,800 for every K and method",True
+F3,"lowest efficiency at 32 threads: 0.72 (tail, N = 604,800)",>= 0.7 for every method and N,True
+F4,"shared -2.1%, tail +0.4%, incremental -4.4%",|error| <= 15% for every method,True
+E1,"h = 0.05: pointwise min 0.945, all at once 0.111, Bonferroni 0.995; h = 0.02: pointwise min 0.940, all at once 0.042, Bonferroni 0.994","pointwise >= 0.931 (0.95 - 4 replay SE) in every cell, Bonferroni joint >= 0.95",True

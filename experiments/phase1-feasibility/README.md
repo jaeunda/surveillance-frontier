@@ -1,7 +1,14 @@
 # Phase 1 — feasibility: what does a stated stress-testing task cost on a strong CPU?
 
-Status: **setup** (engine, four exact trial methods, gates, sweep, projection and estimator check in place; revised
-after a design review on 2026-10-07; reference run pending).
+Status: **done**. Reference run on 2026-10-09 (AWS `c7i.16xlarge`, commit `bc9cd9c`), results in
+[`results/aws-c7i-16xlarge_2026-10-09/`](results/aws-c7i-16xlarge_2026-10-09/), write-up and verdicts in
+[`docs/phase1.md`](../../docs/phase1.md). The plan below (Question through Measurement protocol) is kept as it was
+frozen before the run; the file tables only list scripts and outputs added afterwards.
+
+Post-run audit note: the stored F4 `supported=True` checks trial-loop time only, whereas the frozen hypothesis
+below asks for end-to-end validation. That broader claim remains unverified; see the corrected
+[results discussion](../../docs/phase1.md#how-far-the-projection-was-checked-f4). The 660 sweep records comprise
+600 timed repetitions, 33 gate records, and 27 fixed-trial validation records; validation was not repeated three times.
 
 ## Question
 
@@ -125,6 +132,8 @@ laptop used during setup is a secondary environment only.
 | [`validate_estimator.py`](validate_estimator.py) | Exact rates by enumeration on a small problem; coverage, monotonicity, transition error (E1) |
 | [`scenario_space.py`](scenario_space.py) | Trials per task and projected time-to-solution from measured batch rates |
 | [`make_figures.py`](make_figures.py) | Figures 1-4, `tables.md`, and the verdicts for one run |
+| [`make_doc_figures.py`](make_doc_figures.py) | Figures of `docs/phase1.md` and the README from one run (`docs/assets/phase1/`) |
+| [`replay_estimator.py`](replay_estimator.py) | Post-run check: exact rates and the E1 coverage replay from a run's `raw_hits.tar.gz`, compared with its CSVs |
 | [`run_reference.sh`](run_reference.sh) | The whole protocol on the reference machine, in order |
 | [`requirements.txt`](requirements.txt) | Python dependencies of the scripts |
 
@@ -166,6 +175,9 @@ python3 -m venv .venv && .venv/bin/pip install -r experiments/phase1-feasibility
 | `figs/fig3_thread_scaling.png` | Speedup vs threads per method (F3) |
 | `figs/fig4_time_to_solution.png` | Time-to-solution per task and method, projection error on the validation task (F4) |
 | `figs/fig5_estimator.png` | Exact detection rates and interval coverage (E1) |
+| `tasks_variance_aware.csv` | Exploratory projection with variance-aware allocation (not a verified result; see `docs/phase1.md`) |
+| `raw_hits.tar.gz` | Per-start detection bits from enumeration (`raw/hits_L*_q*.u8`, uint8, starts × policies), input of the coverage replay; `raw/` itself is not committed |
+| `SHA256SUMS` | Checksums of the run's files (recorded after copying them back), including the unpacked `raw/` files |
 
 ## How the pieces connect
 
