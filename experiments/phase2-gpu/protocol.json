@@ -1,0 +1,633 @@
+{
+ "_about": "Frozen parameters of the Phase 2 protocol (README.md). Changes need a dated amendment in README.md before the affected measurement. Values marked 'set_at' are fixed later by the stated rule and committed in protocol-freeze.json.",
+ "version": "2026-10-10 (amended twice on 2026-10-10 before any run: execution environment; calibration, cost basis, records)",
+ "phase1_reference": {
+  "commit": "8f48e90",
+  "run": "experiments/phase1-feasibility/results/aws-c7i-16xlarge_2026-10-09"
+ },
+ "series": {
+  "1m-quarter": {
+   "bars": 131040,
+   "file": "data/BTCUSDT_1m_2024Q1.bin"
+  },
+  "1s-week": {
+   "bars": 604800,
+   "file": "data/BTCUSDT_1s_20240108_14.bin"
+  }
+ },
+ "window_ladder": [
+  2,
+  3,
+  4,
+  6,
+  8,
+  11,
+  16,
+  23,
+  32,
+  45,
+  64,
+  91,
+  128,
+  181,
+  256
+ ],
+ "policy_grids": {
+  "P1": {
+   "K": [
+    15
+   ],
+   "s_min": [
+    2.0
+   ],
+   "episode_gap": [
+    60
+   ]
+  },
+  "P24": {
+   "K": [
+    8,
+    15
+   ],
+   "s_min": [
+    1.5,
+    2.0,
+    2.5,
+    3.0
+   ],
+   "episode_gap": [
+    30,
+    60,
+    120
+   ]
+  },
+  "P105": {
+   "K": [
+    4,
+    8,
+    15
+   ],
+   "s_min": [
+    1.5,
+    1.75,
+    2.0,
+    2.25,
+    2.5,
+    2.75,
+    3.0
+   ],
+   "episode_gap": [
+    15,
+    30,
+    60,
+    120,
+    240
+   ]
+  }
+ },
+ "tasks": {
+  "T1-curve": {
+   "series": [
+    "1m-quarter",
+    "1s-week"
+   ],
+   "policies": "P1",
+   "lengths": [
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+   ],
+   "strengths": [
+    1.0,
+    1.4142,
+    2.0,
+    2.8284,
+    4.0,
+    5.6569,
+    8.0,
+    11.3137,
+    16.0,
+    22.6274,
+    32.0,
+    45.2548,
+    64.0,
+    90.5097,
+    128.0,
+    181.0193,
+    256.0
+   ],
+   "trials_per_cell": 2449,
+   "alpha": 0.05,
+   "coverage": "pointwise",
+   "half_width": 0.02
+  },
+  "T2-policy-map": {
+   "series": [
+    "1m-quarter",
+    "1s-week"
+   ],
+   "policies": "P24",
+   "lengths": [
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256
+   ],
+   "strengths": [
+    1.0,
+    1.4142,
+    2.0,
+    2.8284,
+    4.0,
+    5.6569,
+    8.0,
+    11.3137,
+    16.0,
+    22.6274,
+    32.0,
+    45.2548,
+    64.0,
+    90.5097,
+    128.0,
+    181.0193,
+    256.0
+   ],
+   "trials_per_cell": 11726,
+   "alpha": 1.5318627450980392e-05,
+   "coverage": "simultaneous",
+   "half_width": 0.02
+  },
+  "T-ref": {
+   "series": [
+    "1s-week"
+   ],
+   "policies": "P24",
+   "lengths": [
+    8,
+    32,
+    128
+   ],
+   "strengths": [
+    16,
+    32,
+    64,
+    128,
+    256
+   ],
+   "enumerate": true,
+   "trials_total": 9071175
+  },
+  "T-ref-est": {
+   "series": [
+    "1s-week"
+   ],
+   "policies": "P24",
+   "cells_from": "T-ref",
+   "rates": 360,
+   "budgets_s": [
+    10,
+    30,
+    100,
+    300
+   ],
+   "order": "global round-robin g = j*15 + c, contiguous prefix only",
+   "checkpoints": [
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144
+   ],
+   "alpha_family": 0.05,
+   "alpha_per_interval": 1.2626262626262626e-05,
+   "estimate_if_n0": 0.5,
+   "transition_set": [
+    0.05,
+    0.95
+   ],
+   "seeds_per_launch_pair": 10
+  }
+ },
+ "cell_index": {
+  "T1/T2": "c = iL*17 + iq",
+  "T-ref/T-ref-est": "c = iL*5 + iq"
+ },
+ "t_diag": {
+  "canonical": {
+   "L": 32,
+   "q": 16,
+   "policies": "P24"
+  },
+  "calibration_n": [
+   75600,
+   151200,
+   302400
+  ],
+  "heldout_n": [
+   604800
+  ],
+  "configs": {
+   "sfloor_1.5": {
+    "policies": [
+     {
+      "K": 15,
+      "s_min": 1.5,
+      "episode_gap": 30
+     },
+     {
+      "K": 15,
+      "s_min": 1.5,
+      "episode_gap": 60
+     },
+     {
+      "K": 15,
+      "s_min": 1.5,
+      "episode_gap": 120
+     }
+    ]
+   },
+   "sfloor_2.0": {
+    "policies": [
+     {
+      "K": 15,
+      "s_min": 2.0,
+      "episode_gap": 30
+     },
+     {
+      "K": 15,
+      "s_min": 2.0,
+      "episode_gap": 60
+     },
+     {
+      "K": 15,
+      "s_min": 2.0,
+      "episode_gap": 120
+     }
+    ]
+   },
+   "sfloor_3.0": {
+    "policies": [
+     {
+      "K": 15,
+      "s_min": 3.0,
+      "episode_gap": 30
+     },
+     {
+      "K": 15,
+      "s_min": 3.0,
+      "episode_gap": 60
+     },
+     {
+      "K": 15,
+      "s_min": 3.0,
+      "episode_gap": 120
+     }
+    ]
+   },
+   "count_1": {
+    "policies": [
+     {
+      "K": 15,
+      "s_min": 1.5,
+      "episode_gap": 60
+     }
+    ]
+   },
+   "count_24": {
+    "policies": "P24"
+   },
+   "kmax_8": {
+    "policies": [
+     {
+      "K": 8,
+      "s_min": 2.0,
+      "episode_gap": 60
+     }
+    ]
+   },
+   "kmax_15": {
+    "policies": [
+     {
+      "K": 15,
+      "s_min": 2.0,
+      "episode_gap": 60
+     }
+    ]
+   },
+   "L_2": {
+    "L": 2,
+    "policies": "P24"
+   },
+   "L_256": {
+    "L": 256,
+    "policies": "P24"
+   },
+   "q_0": {
+    "q": 0,
+    "policies": "P24"
+   },
+   "q_256": {
+    "q": 256,
+    "policies": "P24"
+   }
+  },
+  "_note": "count_3 equals sfloor_1.5; L_32 and q_16 equal count_24 (canonical). Unlisted L/q take the canonical values.",
+  "heldout_extra": [
+   {
+    "L": 8,
+    "policies": "P24"
+   },
+   {
+    "L": 128,
+    "policies": "P24"
+   }
+  ],
+  "heldout_points": 13,
+  "gpu_batch": [
+   64,
+   256,
+   1024,
+   "b_max"
+  ],
+  "gpu_cross": {
+   "n": 302400,
+   "sfloor": [
+    1.5,
+    3.0
+   ],
+   "L": [
+    2,
+    256
+   ],
+   "batch": [
+    64,
+    "b_max"
+   ]
+  },
+  "repetitions": 3,
+  "seconds": 5,
+  "model": "t = b0 + b1*C + b2*Cw + b3*W + b4*P (+ b5/b on GPU); NNLS on rows scaled by 1/t_obs",
+  "criterion": {
+   "median_abs_rel_err": 0.2,
+   "max_abs_rel_err": 0.5
+  },
+  "d3_device": "desktop RTX 5060 Ti",
+  "d3_calibration_points": [
+   {
+    "n": 151200,
+    "config": "count_24"
+   },
+   {
+    "n": 302400,
+    "config": "sfloor_3.0"
+   },
+   {
+    "n": 302400,
+    "config": "L_2"
+   }
+  ]
+ },
+ "verdicts": {
+  "unit": "instance launch",
+  "launch_pairs": 3,
+  "launch_pairs_if_sigma_high": 5,
+  "sigma_threshold": 0.047,
+  "interval": "paired t, 90%, on log ratios over launch pairs",
+  "margin": 1.25,
+  "h3_primary": [
+   [
+    "T1-curve",
+    "1m-quarter",
+    "cold"
+   ],
+   [
+    "T1-curve",
+    "1s-week",
+    "cold"
+   ],
+   [
+    "T2-policy-map",
+    "1m-quarter",
+    "cold"
+   ],
+   [
+    "T2-policy-map",
+    "1s-week",
+    "cold"
+   ],
+   [
+    "T-ref",
+    "1s-week",
+    "cold"
+   ]
+  ],
+  "h3_secondary": [
+   [
+    "T1-curve",
+    "1m-quarter",
+    "warm"
+   ],
+   [
+    "T1-curve",
+    "1s-week",
+    "warm"
+   ],
+   [
+    "T2-policy-map",
+    "1m-quarter",
+    "warm"
+   ],
+   [
+    "T2-policy-map",
+    "1s-week",
+    "warm"
+   ]
+  ],
+  "reps_per_launch": {
+   "T1/T2 cold": 3,
+   "T1/T2 warm": 3,
+   "T-ref cold": 1
+  },
+  "timeout_factor": 3.0,
+  "r2_tolerance": 0.15,
+  "stage_c_go_ratio": 1.5,
+  "path_tie_band": 0.1,
+  "parity_min_gain": 0.02
+ },
+ "oracle": {
+  "starts_per_cell_shared": 2000,
+  "starts_per_cell_full": 200,
+  "stream_purpose": "oracle"
+ },
+ "gate": {
+  "starts_per_combination": 64,
+  "small_n": 4096,
+  "extra_lengths": [
+   6,
+   120
+  ]
+ },
+ "stream": {
+  "name": "sf-stream-v1",
+  "generator": "Philox4x32-10",
+  "seed": 20261010,
+  "task_codes": {
+   "T1-curve": 1,
+   "T2-policy-map": 2,
+   "T-ref-est": 3,
+   "T-diag": 4,
+   "gate": 5
+  },
+  "series_codes": {
+   "1m-quarter": 0,
+   "1s-week": 1,
+   "week-prefix-75600": 2,
+   "week-prefix-151200": 3,
+   "week-prefix-302400": 4
+  },
+  "purpose_codes": {
+   "measured": 0,
+   "warmup": 1,
+   "spot": 2,
+   "oracle": 3,
+   "calibration": 4,
+   "gate": 5
+  },
+  "replicates": "0 for fixed-n tasks; H4 launch pair i uses 10(i-1)+1 .. 10i",
+  "max_attempts": 256
+ },
+ "deadline": {
+  "drain_margin_rule": "1.5 x max(exit - stop) over 20 calibration runs (10 at 10 s, 10 at 300 s), rounded up to 10 ms",
+  "late_run": "all cells N=0"
+ },
+ "spot_verify_trials": 256,
+ "launch_order_seed": "20261010 + launch index",
+ "environment": {
+  "reference_cpu": {
+   "instance": "AWS c7i.16xlarge",
+   "region": "us-east-1",
+   "purchase": "spot; on-demand after two interruptions",
+   "use": "all CPU verdict timings, thread calibration, parity adoption, CPU drain margin"
+  },
+  "measurement_gpu": {
+   "G-inc": "AWS g6e.2xlarge (L40S)",
+   "G-hyb": "AWS g6e.4xlarge (L40S)",
+   "region": "us-east-1",
+   "purchase": "on-demand",
+   "use": "path selection, full gate D0, GPU verdict timings, batch size, GPU drain margin, CPU-host"
+  },
+  "desktop": {
+   "cpu": "Intel Core Ultra 5 250K Plus (6P+12E)",
+   "ram_gb": 32,
+   "gpu": "NVIDIA RTX 5060 Ti 8 GB (Blackwell, sm_120)",
+   "os": "Windows 11 + WSL2 Ubuntu 24.04",
+   "use": "development, correctness tests, Phase 1 regression, T-ref reference build and oracle, X1, exploratory CPU diagnostics, GPU prototypes and partial gate, D3; never verdict timings"
+  },
+  "colab": {
+   "gpu": "T4 (sm_75), free tier",
+   "use": "optional extra exactness check of the frozen GPU code; no timings"
+  },
+  "cuda_arch": {
+   "measured": "sm_89",
+   "desktop": "sm_120",
+   "optional": "sm_75"
+  },
+  "cpu_size_control": {
+   "instance": "AWS c7i.8xlarge (16 cores / 32 vCPU / 64 GiB)",
+   "region": "us-east-1",
+   "purchase": "spot",
+   "launches": 1,
+   "use": "X2 only (T1, T2, both series, cold, 3 runs each); never verdicts or CPU-best"
+  },
+  "hardware_identity": {
+   "reference_cpu": "Intel Xeon Platinum 8488C, 32 cores / 64 threads, 1 NUMA node",
+   "measurement_gpu": "NVIDIA L40S",
+   "on_mismatch": "keep, label 'hardware mismatch', exclude from verdicts, replace launch"
+  }
+ },
+ "set_at": {
+  "threads": "Stage A; repeated in pre-freeze calibration if CPU-best changed",
+  "m": "Stage A (CPU only)",
+  "cpu_best": "parity rule, freeze",
+  "gpu_path": "Stage C",
+  "batch": "pre-freeze calibration on the measurement machines",
+  "drain_margin": "pre-freeze calibration on the measurement machines",
+  "timeouts": "pre-freeze calibration on the measurement machines",
+  "warmup_trials": "pre-freeze calibration on the measurement machines",
+  "toolchain": "freeze"
+ },
+ "thread_calibration": {
+  "candidates_reference_cpu": [
+   32,
+   64
+  ],
+  "candidates_x2": [
+   16,
+   32
+  ],
+  "candidates_cpu_host": "physical cores, all vCPUs",
+  "grids": {
+   "set_task_threads": [
+    "P1",
+    "P24"
+   ],
+   "report_only": [
+    "P105"
+   ]
+  },
+  "short": {
+   "q": 16,
+   "lengths": [
+    2,
+    32,
+    256
+   ],
+   "repetitions": 3,
+   "seconds": 5,
+   "select": "max geometric mean over lengths of median throughput"
+  },
+  "sustained": {
+   "q": 16,
+   "length": 32,
+   "seconds": 60,
+   "runs_per_candidate": 1,
+   "rule": "if the sustained order disagrees with the short selection, use the sustained winner and record the flip"
+  },
+  "gpu_batch": "same design over {64, 256, 1024, b_max}; sustained check between the two best"
+ },
+ "cost_basis": {
+  "price": "official AWS on-demand price list, us-east-1 Linux, run date; SKU and file SHA-256 recorded",
+  "instance_hours": "EC2 launch to termination time",
+  "spot": "zone spot price at launch and hours lost to interruptions, reported separately",
+  "separate": [
+   "bills where available",
+   "storage",
+   "transfer"
+  ]
+ },
+ "resource_records": [
+  "cgroup v2 memory.peak",
+  "min MemAvailable",
+  "pswpin/pswpout",
+  "major faults",
+  "CPU steal",
+  "1 Hz per-core MHz",
+  "nvidia-smi clocks and memory (GPU)",
+  "worker affinity at loop start and end"
+ ]
+}
