@@ -7,10 +7,14 @@
 
 namespace sf {
 
+double rarity_score(int32_t count, int64_t nk) {
+  return -std::log10(static_cast<double>(count) / static_cast<double>(nk));
+}
+
 bool is_peak(const int32_t* row, int64_t nk, int64_t s, int64_t r) {
   const int32_t c = row[s];
   for (int64_t j = std::max<int64_t>(0, s - r), end = std::min(nk - 1, s + r); j <= end; ++j)
-    if (j != s && (row[j] < c || (row[j] == c && j < s))) return false;
+    if (j != s && peak_blocked_by(row[j], j, c, s)) return false;
   return true;
 }
 
@@ -40,13 +44,11 @@ void order_candidates(const std::vector<int64_t>& flat, const std::vector<int32_
   for (int64_t idx : flat) {
     const int k = static_cast<int>(idx / n);
     const int64_t s = idx - static_cast<int64_t>(k) * n;
-    const double S = -std::log10(static_cast<double>(counts[idx]) / static_cast<double>(valid_starts(n, windows[k])));
+    const double S = rarity_score(counts[idx], valid_starts(n, windows[k]));
     ordered.push_back({k, s, windows[k], counts[idx], S});
   }
   std::sort(ordered.begin(), ordered.end(), [](const Episode& a, const Episode& b) {
-    if (a.S != b.S) return a.S > b.S;
-    if (a.k != b.k) return a.k < b.k;
-    return a.start < b.start;
+    return episode_before(a.S, a.k, a.start, b.S, b.k, b.start);
   });
 }
 
@@ -58,7 +60,7 @@ void merge_episodes(const std::vector<Episode>& ordered, int64_t n, int K, const
     if (e.k >= K || e.count > count_cap(valid_starts(n, e.window), cfg.s_min)) continue;
     const int64_t a0 = e.start, a1 = e.start + e.window;
     const bool separate = std::all_of(kept.begin(), kept.end(), [&](const Episode& o) {
-      return std::max(a0, o.start) - std::min(a1, o.start + o.window) >= cfg.episode_gap;
+      return episodes_separate(a0, a1, o.start, o.start + o.window, cfg.episode_gap);
     });
     if (separate) {
       kept.push_back(e);

@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "sf/hd.hpp"
+
 namespace sf {
 
 struct Episode {
@@ -27,6 +29,25 @@ struct SelectConfig {
   int top_k = 20;
   int64_t episode_gap = 60;
 };
+
+// The rarity S = -log10(count / nk) of a count; the only definition (candidate ordering and the S tables use it).
+double rarity_score(int32_t count, int64_t nk);
+
+// Candidate order: S descending, then k, then start. Shared by every back end.
+SF_HD bool episode_before(double s_a, int k_a, int64_t start_a, double s_b, int k_b, int64_t start_b) {
+  if (s_a != s_b) return s_a > s_b;
+  if (k_a != k_b) return k_a < k_b;
+  return start_a < start_b;
+}
+
+// Local-peak tie rule: neighbour j (count cj) keeps start s (count c) from being a peak if it is rarer, or equally
+// rare and earlier.
+SF_HD bool peak_blocked_by(int32_t cj, int64_t j, int32_t c, int64_t s) { return cj < c || (cj == c && j < s); }
+
+// Greedy merge: a candidate [a0, a1) is separate from a kept episode [o0, o1) if the gap between them is >= gap.
+SF_HD bool episodes_separate(int64_t a0, int64_t a1, int64_t o0, int64_t o1, int64_t gap) {
+  return (a0 > o0 ? a0 : o0) - (a1 < o1 ? a1 : o1) >= gap;
+}
 
 // Reusable buffers so repeated selections do not allocate.
 struct SelectBuffers {

@@ -24,6 +24,9 @@ struct DetectorConfig {
 
 struct StageTimes {
   double scan_ms = 0, rank_ms = 0, select_ms = 0;
+  // parts of select_ms (incremental method only): peak test, candidate collection, S and sort, per-policy merge,
+  // reset of the count rows
+  double peak_ms = 0, collect_ms = 0, order_ms = 0, merge_ms = 0, reset_ms = 0;
   double total_ms() const { return scan_ms + rank_ms + select_ms; }
 };
 

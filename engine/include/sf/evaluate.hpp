@@ -34,6 +34,37 @@ struct Policy {
 std::vector<Policy> policy_grid(const std::vector<int>& ks, const std::vector<double>& s_mins,
                                 const std::vector<int64_t>& gaps, int top_k = 20);
 
+// CPU parity candidates (Phase 2 SPEC §7) and instrumentation. All off is the Phase 1 incremental method. PC1 (event
+// factor tables) is the EventTable overload of Evaluator::run; PC5 (scratch reuse) is what one Evaluator per worker
+// already does; PC6 (batching by cell) belongs to the batch back end.
+struct EvalOptions {
+  bool s_table = false;      // PC2: S from a per-(k, count) table instead of log10 per candidate
+  bool cap_table = false;    // PC3: per-(policy, k) count caps in the merge instead of pow per candidate
+  bool sparse_both = false;  // PC4: both-set sorted by start, neighbour scan on it, no dense K x N count rows
+  bool diag = false;         // count both-set sizes, neighbour comparisons, peaks and candidates
+  bool trace = false;        // keep the per-stage data of the last trial (gate stage differential)
+};
+
+// Post-execution counts of the last trial (EvalOptions::diag).
+struct TrialCounts {
+  int64_t both = 0, neighbours = 0, peaks = 0, candidates = 0;
+};
+
+// Per-stage data of the last trial (EvalOptions::trace), in a form every method and back end can produce:
+// features of the starts whose windows overlap the event, the both-set (starts whose combined count is <= the cap
+// of s_floor, sorted by start, with that count), the ordered candidates, and the episodes per policy.
+struct TrialTrace {
+  struct Row {
+    int64_t c0 = 0, c1 = -1;
+    std::vector<float> range, volume;  // starts c0 .. c1
+    std::vector<int32_t> both_start, both_count;
+  };
+  bool has_stages = false;  // false for the full method (episodes only)
+  std::vector<Row> rows;
+  std::vector<Episode> ordered;
+  std::vector<std::vector<Episode>> episodes;
+};
+
 // Read-only state built once per series and shared by all workers.
 struct BaseState {
   const Series* base = nullptr;
@@ -48,6 +79,10 @@ struct BaseState {
   };
   std::vector<Head> heads;
   std::vector<std::vector<Episode>> episodes;  // per policy, on the base series
+  // tables shared by the parity options and the GPU back end
+  std::vector<int64_t> caps;                   // per row: count_cap(N_k, s_floor)
+  std::vector<std::vector<double>> s_table;    // per row: rarity_score(c, N_k) for c = 0 .. cap (index 0 unused)
+  std::vector<std::vector<int32_t>> policy_caps;  // per policy, per row: count_cap(N_k, s_min of the policy)
 };
 
 // s_floor_override > 0 replaces the smallest s_min (only the gate's negative control uses it).
@@ -56,12 +91,18 @@ BaseState prepare_base(const Series& base, const std::vector<int32_t>& ladder, c
 
 class Evaluator {
  public:
-  Evaluator(const BaseState& base, Method method);
+  Evaluator(const BaseState& base, Method method, const EvalOptions& options = {});
 
   // Episodes per policy (same order as base.policies) for the base series with e applied. threads > 1
   // parallelizes inside the trial over window lengths. The returned reference is valid until the next call.
   const std::vector<std::vector<Episode>>& run(const TestEvent& e, double median_range_L, int threads,
                                                StageTimes* times = nullptr);
+  // The same with the event factors from a table (PC1); same bits.
+  const std::vector<std::vector<Episode>>& run(const TestEvent& e, const EventTable& table, int threads,
+                                               StageTimes* times = nullptr);
+
+  const TrialCounts& counts() const { return counts_; }
+  const TrialTrace& trace() const { return trace_; }
 
  private:
   struct TailEntry {
@@ -75,18 +116,28 @@ class Evaluator {
     std::vector<RankItem> changed, merged;
     std::vector<TailEntry> tail_range, tail_volume;
     std::vector<int64_t> peaks;
+    std::vector<TailEntry> both_sparse;  // PC4: (start, combined count), sorted by start
+    std::vector<Episode> peak_eps;       // PC4: peaks as candidates of this row
+    int64_t neighbours = 0;              // diag
   };
 
   void merge_tail(const std::vector<RankItem>& head, const std::vector<float>& values, int64_t nk, int64_t cap,
                   Row& row, std::vector<TailEntry>& tail);
 
+  void evaluate(const TestEvent& e, int threads, StageTimes* times);
   void run_full(int threads, StageTimes& st);
-  void run_shared(RankKind kind, int threads, StageTimes& st);
+  void run_shared(const TestEvent& e, RankKind kind, int threads, StageTimes& st);
   void run_incremental(const TestEvent& e, int threads, StageTimes& st);
+  void sparse_peaks(Row& row, int k, int64_t nk, int64_t r);
+  void order_sparse();
   void merge_policies();
+  void trace_rows(const TestEvent& e);
 
   const BaseState& b_;
   Method method_;
+  EvalOptions opt_;
+  TrialCounts counts_;
+  TrialTrace trace_;
   Series work_;
   Workspace ws_;
   std::vector<DetectorConfig> configs_;  // Full: one detector per policy

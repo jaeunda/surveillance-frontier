@@ -1,0 +1,57 @@
+{
+ "task": "T-diag",
+ "task_code": 4,
+ "series": {
+  "name": "week-prefix-151200",
+  "path": "data/BTCUSDT_1s_20240108_14.bin",
+  "sha256": "eff8fccb812cd3dcbaebcaa615fc232e0777452698092deb553974a54e84e52a",
+  "code": 3,
+  "bars": 151200,
+  "prefix": 151200
+ },
+ "window_ladder": [
+  2,
+  3,
+  4,
+  6,
+  8,
+  11,
+  16,
+  23,
+  32,
+  45,
+  64,
+  91,
+  128,
+  181,
+  256
+ ],
+ "policies": [
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  }
+ ],
+ "max_length": 256,
+ "cells": [
+  {
+   "L": 32,
+   "q": 16,
+   "kind": "both",
+   "stream_cell": 0
+  }
+ ],
+ "trials": {
+  "order": "round-robin"
+ },
+ "stream": {
+  "purpose": "calibration",
+  "replicate": 0
+ },
+ "tdiag": {
+  "config": "kmax_15",
+  "n": 151200
+ }
+}

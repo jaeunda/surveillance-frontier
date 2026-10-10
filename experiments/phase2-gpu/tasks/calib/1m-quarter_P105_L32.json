@@ -1,0 +1,682 @@
+{
+ "task": "T-diag",
+ "task_code": 4,
+ "series": {
+  "name": "1m-quarter",
+  "path": "data/BTCUSDT_1m_2024Q1.bin",
+  "sha256": "646b71efcf9f4df77775df6159f98c4324d08fc87344a8a4278d59d5d99253c3",
+  "code": 0,
+  "bars": 131040,
+  "prefix": 0
+ },
+ "window_ladder": [
+  2,
+  3,
+  4,
+  6,
+  8,
+  11,
+  16,
+  23,
+  32,
+  45,
+  64,
+  91,
+  128,
+  181,
+  256
+ ],
+ "policies": [
+  {
+   "K": 4,
+   "s_min": 1.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 1.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.0,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.25,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.25,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.25,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.25,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.25,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 2.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 3.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 3.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 3.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 3.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 4,
+   "s_min": 3.0,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.25,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.25,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.25,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.25,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.25,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.25,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.25,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.25,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.25,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.25,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.75,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.75,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.75,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.75,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.75,
+   "episode_gap": 240,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 15,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 240,
+   "top_k": 20
+  }
+ ],
+ "max_length": 256,
+ "cells": [
+  {
+   "L": 32,
+   "q": 16,
+   "kind": "both",
+   "stream_cell": 0
+  }
+ ],
+ "trials": {
+  "order": "round-robin"
+ },
+ "stream": {
+  "purpose": "calibration",
+  "replicate": 0
+ },
+ "calibration": {
+  "series": "1m-quarter",
+  "grid": "P105",
+  "L": 32
+ }
+}

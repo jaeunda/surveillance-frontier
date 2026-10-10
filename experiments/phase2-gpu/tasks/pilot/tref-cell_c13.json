@@ -1,0 +1,196 @@
+{
+ "task": "T-diag",
+ "task_code": 4,
+ "series": {
+  "name": "1s-week",
+  "path": "data/BTCUSDT_1s_20240108_14.bin",
+  "sha256": "eff8fccb812cd3dcbaebcaa615fc232e0777452698092deb553974a54e84e52a",
+  "code": 1,
+  "bars": 604800,
+  "prefix": 0
+ },
+ "window_ladder": [
+  2,
+  3,
+  4,
+  6,
+  8,
+  11,
+  16,
+  23,
+  32,
+  45,
+  64,
+  91,
+  128,
+  181,
+  256
+ ],
+ "policies": [
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 1.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 2.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 8,
+   "s_min": 3.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 1.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.0,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 2.5,
+   "episode_gap": 120,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 30,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 60,
+   "top_k": 20
+  },
+  {
+   "K": 15,
+   "s_min": 3.0,
+   "episode_gap": 120,
+   "top_k": 20
+  }
+ ],
+ "max_length": 256,
+ "cells": [
+  {
+   "L": 128,
+   "q": 128,
+   "kind": "both",
+   "stream_cell": 0
+  }
+ ],
+ "trials": {
+  "order": "round-robin"
+ },
+ "stream": {
+  "purpose": "calibration",
+  "replicate": 0
+ },
+ "tref_cell": {
+  "cell": 13,
+  "L": 128,
+  "q": 128
+ }
+}

@@ -64,7 +64,7 @@ before it is measured. Full write-up, limits, and the plan for Phase 2:
 |---|---|---|---|
 | 0. Pilot | When does a GPU help an exhaustive window scan, where does the time go, and what does a time budget buy? | Done | [Phase 0 results](docs/phase0.md) |
 | **1. Feasibility** | What does a stated stress-testing task cost with the fastest exact CPU method? | Done | [Phase 1 results](docs/phase1.md) |
-| 2. GPU engine | Does a bit-identical GPU engine reach the same accuracy in less time than the incremental CPU? | Next | — |
+| 2. GPU engine | What limits the exact computation on the machines at hand, does the matching resource help, and does a bit-identical GPU engine reach the same result sooner than the incremental CPU? | Designed, not started | [Protocol](experiments/phase2-gpu/README.md) |
 
 ## Repository layout
 

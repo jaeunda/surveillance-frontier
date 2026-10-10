@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <stdexcept>
 
 namespace sf {
@@ -66,6 +67,17 @@ BaseState prepare_base(const Series& base, const std::vector<int32_t>& ladder, c
   }
   if (s_floor_override > 0) b.s_floor = s_floor_override;
   b.windows.assign(ladder.begin(), ladder.begin() + k_max);
+  for (int32_t w : b.windows) {
+    const int64_t nk = valid_starts(base.size(), w), cap = std::min(count_cap(nk, b.s_floor), nk);
+    b.caps.push_back(cap);
+    b.s_table.emplace_back(cap + 1, 0.0);
+    for (int64_t c = 1; c <= cap; ++c) b.s_table.back()[c] = rarity_score(static_cast<int32_t>(c), nk);
+  }
+  for (const auto& p : policies) {
+    b.policy_caps.emplace_back();
+    for (int32_t w : b.windows)
+      b.policy_caps.back().push_back(static_cast<int32_t>(count_cap(valid_starts(base.size(), w), p.select.s_min)));
+  }
 
   // each policy's episodes on the unchanged series (a q = 0 event changes nothing)
   b.episodes = Evaluator(b, Method::Tail).run({0, 1, 0.0}, 0.0, threads);
@@ -90,8 +102,8 @@ BaseState prepare_base(const Series& base, const std::vector<int32_t>& ladder, c
   return b;
 }
 
-Evaluator::Evaluator(const BaseState& base, Method method)
-    : b_(base), method_(method), work_(*base.base), out_(base.policies.size()) {
+Evaluator::Evaluator(const BaseState& base, Method method, const EvalOptions& options)
+    : b_(base), method_(method), opt_(options), work_(*base.base), out_(base.policies.size()) {
   if (method_ == Method::Full) {
     for (const auto& p : b_.policies) {
       DetectorConfig cfg;
@@ -101,24 +113,41 @@ Evaluator::Evaluator(const BaseState& base, Method method)
     }
   } else if (method_ == Method::Incremental) {
     if (b_.heads.size() != b_.windows.size()) throw std::invalid_argument("base state has no incremental heads");
-    cc_.assign(b_.windows.size() * static_cast<size_t>(work_.size()), kAboveCap);
+    if (!opt_.sparse_both) cc_.assign(b_.windows.size() * static_cast<size_t>(work_.size()), kAboveCap);
     rows_.resize(b_.windows.size());
   }
 }
 
 const std::vector<std::vector<Episode>>& Evaluator::run(const TestEvent& e, double median_range_L, int threads,
                                                         StageTimes* times) {
-  StageTimes st;
   apply_event(*b_.base, e, median_range_L, work_);
+  evaluate(e, threads, times);
+  return out_;
+}
+
+const std::vector<std::vector<Episode>>& Evaluator::run(const TestEvent& e, const EventTable& table, int threads,
+                                                        StageTimes* times) {
+  apply_event(*b_.base, e, table, work_);
+  evaluate(e, threads, times);
+  return out_;
+}
+
+void Evaluator::evaluate(const TestEvent& e, int threads, StageTimes* times) {
+  StageTimes st;
+  counts_ = TrialCounts{};
   switch (method_) {
     case Method::Full: run_full(threads, st); break;
-    case Method::Shared: run_shared(RankKind::Sort, threads, st); break;
-    case Method::Tail: run_shared(RankKind::Tail, threads, st); break;
+    case Method::Shared: run_shared(e, RankKind::Sort, threads, st); break;
+    case Method::Tail: run_shared(e, RankKind::Tail, threads, st); break;
     case Method::Incremental: run_incremental(e, threads, st); break;
+  }
+  if (opt_.trace) {
+    trace_.episodes = out_;
+    trace_.has_stages = method_ != Method::Full;
+    if (method_ != Method::Full) trace_.ordered = ws_.select.ordered;
   }
   restore(*b_.base, e, work_);
   if (times) *times = st;
-  return out_;
 }
 
 void Evaluator::run_full(int threads, StageTimes& st) {
@@ -132,11 +161,88 @@ void Evaluator::run_full(int threads, StageTimes& st) {
 }
 
 void Evaluator::merge_policies() {
-  for (size_t p = 0; p < b_.policies.size(); ++p)
-    merge_episodes(ws_.select.ordered, work_.size(), b_.policies[p].K, b_.policies[p].select, out_[p]);
+  if (!opt_.cap_table) {
+    for (size_t p = 0; p < b_.policies.size(); ++p)
+      merge_episodes(ws_.select.ordered, work_.size(), b_.policies[p].K, b_.policies[p].select, out_[p]);
+    return;
+  }
+  // PC3: merge_episodes with the count caps from the table
+  for (size_t p = 0; p < b_.policies.size(); ++p) {
+    const Policy& pol = b_.policies[p];
+    const int32_t* caps = b_.policy_caps[p].data();
+    auto& kept = out_[p];
+    kept.clear();
+    for (const Episode& e : ws_.select.ordered) {
+      if (e.k >= pol.K || e.count > caps[e.k]) continue;
+      const int64_t a0 = e.start, a1 = e.start + e.window;
+      const bool separate = std::all_of(kept.begin(), kept.end(), [&](const Episode& o) {
+        return episodes_separate(a0, a1, o.start, o.start + o.window, pol.select.episode_gap);
+      });
+      if (separate) {
+        kept.push_back(e);
+        if (static_cast<int>(kept.size()) == pol.select.top_k) break;
+      }
+    }
+  }
 }
 
-void Evaluator::run_shared(RankKind kind, int threads, StageTimes& st) {
+// PC4: peaks of one row from its both-set sorted by start; starts outside the set have count kAboveCap and can never
+// block a start inside it, so only set members within +-r are compared.
+void Evaluator::sparse_peaks(Row& row, int k, int64_t nk, int64_t r) {
+  (void)nk;  // every member is a valid start, so the +-r scan never passes nk - 1
+  row.peak_eps.clear();
+  row.neighbours = 0;
+  const auto& both = row.both_sparse;
+  const int32_t w = b_.windows[k];
+  for (size_t i = 0; i < both.size(); ++i) {
+    const int64_t s = both[i].start;
+    const int32_t c = both[i].count;
+    bool peak = true;
+    for (size_t j = i; peak && j-- > 0 && both[j].start >= s - r;) {
+      row.neighbours += opt_.diag;
+      peak = !peak_blocked_by(both[j].count, both[j].start, c, s);
+    }
+    for (size_t j = i + 1; peak && j < both.size() && both[j].start <= s + r; ++j) {
+      row.neighbours += opt_.diag;
+      peak = !peak_blocked_by(both[j].count, both[j].start, c, s);
+    }
+    if (peak) {
+      const double S = opt_.s_table ? b_.s_table[k][c] : rarity_score(c, valid_starts(work_.size(), w));
+      row.peak_eps.push_back({k, s, w, c, S});
+    }
+  }
+}
+
+void Evaluator::order_sparse() {
+  auto& ordered = ws_.select.ordered;
+  ordered.clear();
+  for (const Row& row : rows_) ordered.insert(ordered.end(), row.peak_eps.begin(), row.peak_eps.end());
+}
+
+// Features of the starts whose windows overlap the event and the both-set, from full feature and count rows.
+void Evaluator::trace_rows(const TestEvent& e) {
+  const int64_t n = work_.size();
+  const int K = static_cast<int>(b_.windows.size());
+  trace_.rows.assign(K, {});
+  for (int k = 0; k < K; ++k) {
+    auto& r = trace_.rows[k];
+    const int64_t w = b_.windows[k], nk = valid_starts(n, b_.windows[k]);
+    r.c0 = std::max<int64_t>(0, e.start - w + 1);
+    r.c1 = std::min<int64_t>(nk - 1, e.start + e.length - 1);
+    const size_t row = static_cast<size_t>(k) * n;
+    r.range.assign(ws_.features.range.begin() + row + r.c0, ws_.features.range.begin() + row + r.c1 + 1);
+    r.volume.assign(ws_.features.volume.begin() + row + r.c0, ws_.features.volume.begin() + row + r.c1 + 1);
+    for (int64_t s = 0; s < nk; ++s) {
+      const int32_t c = ws_.counts[row + s];
+      if (c <= b_.caps[k]) {
+        r.both_start.push_back(static_cast<int32_t>(s));
+        r.both_count.push_back(c);
+      }
+    }
+  }
+}
+
+void Evaluator::run_shared(const TestEvent& e, RankKind kind, int threads, StageTimes& st) {
   const SeriesView x = view(work_);
   auto t0 = Clock::now();
   scan_features(x, b_.windows, ScanKind::Optimized, false, threads, ws_.features, ws_.scan);
@@ -149,6 +255,7 @@ void Evaluator::run_shared(RankKind kind, int threads, StageTimes& st) {
   order_candidates(ws_.candidates, ws_.counts, x.n, b_.windows, ws_.select.ordered);
   merge_policies();
   st.select_ms = ms_since(t0);
+  if (opt_.trace) trace_rows(e);
 }
 
 // The first (cap + 1) values of the perturbed row, descending: the base head without the replaced starts
@@ -191,10 +298,13 @@ void Evaluator::run_incremental(const TestEvent& e, int threads, StageTimes& st)
   const int K = static_cast<int>(b_.windows.size());
   const SeriesView x = view(work_);
 
-  // 1) new features of the starts whose windows overlap the event
+  // 1) new features of the starts whose windows overlap the event; an error (fixed-point overflow) is rethrown after
+  // the parallel loop, since an exception must not leave an OpenMP region
   auto t0 = Clock::now();
+  std::exception_ptr error;
 #pragma omp parallel for num_threads(threads) if (threads > 1) schedule(dynamic, 1)
   for (int k = 0; k < K; ++k) {
+    try {
     Row& row = rows_[k];
     const int64_t w = b_.windows[k], nk = valid_starts(n, b_.windows[k]);
     row.c0 = std::max<int64_t>(0, e.start - w + 1);
@@ -208,7 +318,12 @@ void Evaluator::run_incremental(const TestEvent& e, int threads, StageTimes& st)
     fixed_volumes(sub, w, row.vfix);
     scan_starts(sub, row.vfix.data(), w, cnt, row.new_range.data(), row.new_volume.data(), nullptr, nullptr,
                 row.qmin.data(), row.qmax.data());
+    } catch (...) {
+#pragma omp critical(sf_incremental_error)
+      if (!error) error = std::current_exception();
+    }
   }
+  if (error) std::rethrow_exception(error);
   st.scan_ms = ms_since(t0);
 
   // 2) exact tails of both features; combined counts where both are in their tail, kAboveCap elsewhere
@@ -219,6 +334,23 @@ void Evaluator::run_incremental(const TestEvent& e, int threads, StageTimes& st)
     const int64_t nk = valid_starts(n, b_.windows[k]), cap = count_cap(nk, b_.s_floor);
     merge_tail(b_.heads[k].range, row.new_range, nk, cap, row, row.tail_range);
     merge_tail(b_.heads[k].volume, row.new_volume, nk, cap, row, row.tail_volume);
+    if (opt_.sparse_both) {
+      // PC4: both tails sorted by start, intersected; the combined count is the larger of the two
+      const auto by_start = [](const TailEntry& a, const TailEntry& b) { return a.start < b.start; };
+      std::sort(row.tail_range.begin(), row.tail_range.end(), by_start);
+      std::sort(row.tail_volume.begin(), row.tail_volume.end(), by_start);
+      row.both_sparse.clear();
+      for (size_t i = 0, j = 0; i < row.tail_range.size() && j < row.tail_volume.size();) {
+        const auto &a = row.tail_range[i], &b = row.tail_volume[j];
+        if (a.start < b.start) ++i;
+        else if (b.start < a.start) ++j;
+        else {
+          row.both_sparse.push_back({a.start, std::max(a.count, b.count)});
+          ++i, ++j;
+        }
+      }
+      continue;
+    }
     int32_t* cc = cc_.data() + static_cast<size_t>(k) * n;
     // range counts first; a start in both tails is marked negative (-c - 1) when its volume count arrives;
     // unmarked range-only starts go back to kAboveCap
@@ -235,22 +367,104 @@ void Evaluator::run_incremental(const TestEvent& e, int threads, StageTimes& st)
 
   // 3) peaks among the starts in both tails, then per-policy merge
   t0 = Clock::now();
+  auto t1 = t0;
+  const auto lap = [&t1](double& acc) {
+    const auto now = Clock::now();
+    acc += std::chrono::duration<double, std::milli>(now - t1).count();
+    t1 = now;
+  };
+  if (opt_.sparse_both) {
 #pragma omp parallel for num_threads(threads) if (threads > 1) schedule(dynamic, 1)
-  for (int k = 0; k < K; ++k) {
-    Row& row = rows_[k];
-    const int64_t w = b_.windows[k], nk = valid_starts(n, b_.windows[k]), r = std::max<int64_t>(1, w / 2);
-    const int32_t* cc = cc_.data() + static_cast<size_t>(k) * n;
-    row.peaks.clear();
-    for (int32_t s : row.both)
-      if (is_peak(cc, nk, s, r)) row.peaks.push_back(static_cast<int64_t>(k) * n + s);
+    for (int k = 0; k < K; ++k) {
+      const int64_t w = b_.windows[k];
+      sparse_peaks(rows_[k], k, valid_starts(n, b_.windows[k]), std::max<int64_t>(1, w / 2));
+    }
+    lap(st.peak_ms);
+    order_sparse();
+    lap(st.collect_ms);
+    std::sort(ws_.select.ordered.begin(), ws_.select.ordered.end(), [](const Episode& a, const Episode& b) {
+      return episode_before(a.S, a.k, a.start, b.S, b.k, b.start);
+    });
+    lap(st.order_ms);
+    merge_policies();
+    lap(st.merge_ms);
+  } else {
+#pragma omp parallel for num_threads(threads) if (threads > 1) schedule(dynamic, 1)
+    for (int k = 0; k < K; ++k) {
+      Row& row = rows_[k];
+      const int64_t w = b_.windows[k], nk = valid_starts(n, b_.windows[k]), r = std::max<int64_t>(1, w / 2);
+      const int32_t* cc = cc_.data() + static_cast<size_t>(k) * n;
+      row.peaks.clear();
+      row.neighbours = 0;
+      if (opt_.diag) {
+        for (int32_t s : row.both) {
+          bool peak = true;
+          for (int64_t j = std::max<int64_t>(0, s - r), end = std::min(nk - 1, s + r); peak && j <= end; ++j)
+            if (j != s) ++row.neighbours, peak = !peak_blocked_by(cc[j], j, cc[s], s);
+          if (peak) row.peaks.push_back(static_cast<int64_t>(k) * n + s);
+        }
+        continue;
+      }
+      for (int32_t s : row.both)
+        if (is_peak(cc, nk, s, r)) row.peaks.push_back(static_cast<int64_t>(k) * n + s);
+    }
+    lap(st.peak_ms);
+    ws_.candidates.clear();
+    for (const Row& row : rows_) ws_.candidates.insert(ws_.candidates.end(), row.peaks.begin(), row.peaks.end());
+    lap(st.collect_ms);
+    if (opt_.s_table) {
+      // PC2: order_candidates with S from the table
+      auto& ordered = ws_.select.ordered;
+      ordered.clear();
+      for (int64_t idx : ws_.candidates) {
+        const int k = static_cast<int>(idx / n);
+        const int64_t s = idx - static_cast<int64_t>(k) * n;
+        ordered.push_back({k, s, b_.windows[k], cc_[idx], b_.s_table[k][cc_[idx]]});
+      }
+      std::sort(ordered.begin(), ordered.end(), [](const Episode& a, const Episode& b) {
+        return episode_before(a.S, a.k, a.start, b.S, b.k, b.start);
+      });
+    } else {
+      order_candidates(ws_.candidates, cc_, n, b_.windows, ws_.select.ordered);
+    }
+    lap(st.order_ms);
+    merge_policies();
+    lap(st.merge_ms);
   }
-  ws_.candidates.clear();
-  for (const Row& row : rows_) ws_.candidates.insert(ws_.candidates.end(), row.peaks.begin(), row.peaks.end());
-  order_candidates(ws_.candidates, cc_, n, b_.windows, ws_.select.ordered);
-  merge_policies();
+  if (opt_.diag || opt_.trace) {
+    for (const Row& row : rows_) {
+      counts_.both += opt_.sparse_both ? row.both_sparse.size() : row.both.size();
+      counts_.neighbours += row.neighbours;
+      counts_.peaks += opt_.sparse_both ? row.peak_eps.size() : row.peaks.size();
+    }
+    counts_.candidates = static_cast<int64_t>(ws_.select.ordered.size());
+  }
+  if (opt_.trace) {
+    trace_.rows.assign(K, {});
+    for (int k = 0; k < K; ++k) {
+      const Row& row = rows_[k];
+      auto& r = trace_.rows[k];
+      r.c0 = row.c0;
+      r.c1 = row.c1;
+      r.range = row.new_range;
+      r.volume = row.new_volume;
+      std::vector<TailEntry> both = row.both_sparse;
+      if (!opt_.sparse_both) {
+        both.clear();
+        for (int32_t s : row.both) both.push_back({s, cc_[static_cast<size_t>(k) * n + s]});
+        std::sort(both.begin(), both.end(), [](const TailEntry& a, const TailEntry& b) { return a.start < b.start; });
+      }
+      for (const auto& t : both) {
+        r.both_start.push_back(t.start);
+        r.both_count.push_back(t.count);
+      }
+    }
+  }
   // leave cc at kAboveCap for the next trial
-  for (int k = 0; k < K; ++k)
-    for (int32_t s : rows_[k].both) cc_[static_cast<size_t>(k) * n + s] = kAboveCap;
+  if (!opt_.sparse_both)
+    for (int k = 0; k < K; ++k)
+      for (int32_t s : rows_[k].both) cc_[static_cast<size_t>(k) * n + s] = kAboveCap;
+  lap(st.reset_ms);
   st.select_ms = ms_since(t0);
 }
 

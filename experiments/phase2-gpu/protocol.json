@@ -1,6 +1,21 @@
 {
- "_about": "Frozen parameters of the Phase 2 protocol (README.md). Changes need a dated amendment in README.md before the affected measurement. Values marked 'set_at' are fixed later by the stated rule and committed in protocol-freeze.json.",
- "version": "2026-10-10 (amended twice on 2026-10-10 before any run: execution environment; calibration, cost basis, records)",
+ "_about": "Parameters of the Phase 2 protocol (README.md). Part I (pilot) and Part II (scaling decision) feed Part III (formal comparison). Values marked 'set_at' are fixed later by the stated rule: pilot plans in pilot-plan.json, scaling choices in scaling-decision.json, formal values in protocol-freeze.json. Changes to this file need a dated revision entry in README.md before the affected measurement.",
+ "revision": {
+  "current": "r2, 2026-10-10",
+  "history": [
+   {
+    "rev": "r1",
+    "date": "2026-10-10",
+    "commit": "6f4aad9",
+    "content": "cloud-first design with two same-day amendments; frozen, never measured"
+   },
+   {
+    "rev": "r2",
+    "date": "2026-10-10",
+    "content": "restructured before any measurement: a pilot on available machines and a recorded scaling decision precede the formal comparison; formal machines come from that decision"
+   }
+  ]
+ },
  "phase1_reference": {
   "commit": "8f48e90",
   "run": "experiments/phase1-feasibility/results/aws-c7i-16xlarge_2026-10-09"
@@ -227,6 +242,35 @@
   "T1/T2": "c = iL*17 + iq",
   "T-ref/T-ref-est": "c = iL*5 + iq"
  },
+ "stream": {
+  "name": "sf-stream-v1",
+  "generator": "Philox4x32-10",
+  "seed": 20261010,
+  "task_codes": {
+   "T1-curve": 1,
+   "T2-policy-map": 2,
+   "T-ref-est": 3,
+   "T-diag": 4,
+   "gate": 5
+  },
+  "series_codes": {
+   "1m-quarter": 0,
+   "1s-week": 1,
+   "week-prefix-75600": 2,
+   "week-prefix-151200": 3,
+   "week-prefix-302400": 4
+  },
+  "purpose_codes": {
+   "measured": 0,
+   "warmup": 1,
+   "spot": 2,
+   "oracle": 3,
+   "calibration": 4,
+   "gate": 5
+  },
+  "replicates": "0 for fixed-n tasks; H4 launch pair i uses 10(i-1)+1 .. 10i",
+  "max_attempts": 256
+ },
  "t_diag": {
   "canonical": {
    "L": 32,
@@ -385,249 +429,357 @@
   "criterion": {
    "median_abs_rel_err": 0.2,
    "max_abs_rel_err": 0.5
-  },
-  "d3_device": "desktop RTX 5060 Ti",
-  "d3_calibration_points": [
-   {
-    "n": 151200,
-    "config": "count_24"
-   },
-   {
-    "n": 302400,
-    "config": "sfloor_3.0"
-   },
-   {
-    "n": 302400,
-    "config": "L_2"
-   }
-  ]
- },
- "verdicts": {
-  "unit": "instance launch",
-  "launch_pairs": 3,
-  "launch_pairs_if_sigma_high": 5,
-  "sigma_threshold": 0.047,
-  "interval": "paired t, 90%, on log ratios over launch pairs",
-  "margin": 1.25,
-  "h3_primary": [
-   [
-    "T1-curve",
-    "1m-quarter",
-    "cold"
-   ],
-   [
-    "T1-curve",
-    "1s-week",
-    "cold"
-   ],
-   [
-    "T2-policy-map",
-    "1m-quarter",
-    "cold"
-   ],
-   [
-    "T2-policy-map",
-    "1s-week",
-    "cold"
-   ],
-   [
-    "T-ref",
-    "1s-week",
-    "cold"
-   ]
-  ],
-  "h3_secondary": [
-   [
-    "T1-curve",
-    "1m-quarter",
-    "warm"
-   ],
-   [
-    "T1-curve",
-    "1s-week",
-    "warm"
-   ],
-   [
-    "T2-policy-map",
-    "1m-quarter",
-    "warm"
-   ],
-   [
-    "T2-policy-map",
-    "1s-week",
-    "warm"
-   ]
-  ],
-  "reps_per_launch": {
-   "T1/T2 cold": 3,
-   "T1/T2 warm": 3,
-   "T-ref cold": 1
-  },
-  "timeout_factor": 3.0,
-  "r2_tolerance": 0.15,
-  "stage_c_go_ratio": 1.5,
-  "path_tie_band": 0.1,
-  "parity_min_gain": 0.02
- },
- "oracle": {
-  "starts_per_cell_shared": 2000,
-  "starts_per_cell_full": 200,
-  "stream_purpose": "oracle"
- },
- "gate": {
-  "starts_per_combination": 64,
-  "small_n": 4096,
-  "extra_lengths": [
-   6,
-   120
-  ]
- },
- "stream": {
-  "name": "sf-stream-v1",
-  "generator": "Philox4x32-10",
-  "seed": 20261010,
-  "task_codes": {
-   "T1-curve": 1,
-   "T2-policy-map": 2,
-   "T-ref-est": 3,
-   "T-diag": 4,
-   "gate": 5
-  },
-  "series_codes": {
-   "1m-quarter": 0,
-   "1s-week": 1,
-   "week-prefix-75600": 2,
-   "week-prefix-151200": 3,
-   "week-prefix-302400": 4
-  },
-  "purpose_codes": {
-   "measured": 0,
-   "warmup": 1,
-   "spot": 2,
-   "oracle": 3,
-   "calibration": 4,
-   "gate": 5
-  },
-  "replicates": "0 for fixed-n tasks; H4 launch pair i uses 10(i-1)+1 .. 10i",
-  "max_attempts": 256
- },
- "deadline": {
-  "drain_margin_rule": "1.5 x max(exit - stop) over 20 calibration runs (10 at 10 s, 10 at 300 s), rounded up to 10 ms",
-  "late_run": "all cells N=0"
- },
- "spot_verify_trials": 256,
- "launch_order_seed": "20261010 + launch index",
- "environment": {
-  "reference_cpu": {
-   "instance": "AWS c7i.16xlarge",
-   "region": "us-east-1",
-   "purchase": "spot; on-demand after two interruptions",
-   "use": "all CPU verdict timings, thread calibration, parity adoption, CPU drain margin"
-  },
-  "measurement_gpu": {
-   "G-inc": "AWS g6e.2xlarge (L40S)",
-   "G-hyb": "AWS g6e.4xlarge (L40S)",
-   "region": "us-east-1",
-   "purchase": "on-demand",
-   "use": "path selection, full gate D0, GPU verdict timings, batch size, GPU drain margin, CPU-host"
-  },
-  "desktop": {
-   "cpu": "Intel Core Ultra 5 250K Plus (6P+12E)",
-   "ram_gb": 32,
-   "gpu": "NVIDIA RTX 5060 Ti 8 GB (Blackwell, sm_120)",
-   "os": "Windows 11 + WSL2 Ubuntu 24.04",
-   "use": "development, correctness tests, Phase 1 regression, T-ref reference build and oracle, X1, exploratory CPU diagnostics, GPU prototypes and partial gate, D3; never verdict timings"
-  },
-  "colab": {
-   "gpu": "T4 (sm_75), free tier",
-   "use": "optional extra exactness check of the frozen GPU code; no timings"
-  },
-  "cuda_arch": {
-   "measured": "sm_89",
-   "desktop": "sm_120",
-   "optional": "sm_75"
-  },
-  "cpu_size_control": {
-   "instance": "AWS c7i.8xlarge (16 cores / 32 vCPU / 64 GiB)",
-   "region": "us-east-1",
-   "purchase": "spot",
-   "launches": 1,
-   "use": "X2 only (T1, T2, both series, cold, 3 runs each); never verdicts or CPU-best"
-  },
-  "hardware_identity": {
-   "reference_cpu": "Intel Xeon Platinum 8488C, 32 cores / 64 threads, 1 NUMA node",
-   "measurement_gpu": "NVIDIA L40S",
-   "on_mismatch": "keep, label 'hardware mismatch', exclude from verdicts, replace launch"
   }
  },
- "set_at": {
-  "threads": "Stage A; repeated in pre-freeze calibration if CPU-best changed",
-  "m": "Stage A (CPU only)",
-  "cpu_best": "parity rule, freeze",
-  "gpu_path": "Stage C",
-  "batch": "pre-freeze calibration on the measurement machines",
-  "drain_margin": "pre-freeze calibration on the measurement machines",
-  "timeouts": "pre-freeze calibration on the measurement machines",
-  "warmup_trials": "pre-freeze calibration on the measurement machines",
-  "toolchain": "freeze"
- },
- "thread_calibration": {
-  "candidates_reference_cpu": [
-   32,
-   64
-  ],
-  "candidates_x2": [
-   16,
-   32
-  ],
-  "candidates_cpu_host": "physical cores, all vCPUs",
-  "grids": {
-   "set_task_threads": [
-    "P1",
-    "P24"
-   ],
-   "report_only": [
-    "P105"
+ "machines": {
+  "lab-desktop": {
+   "kind": "available",
+   "description": "Lab PC: Intel Core Ultra 5 250K Plus (hybrid P/E cores, 18 logical CPUs), 32 GiB host RAM (WSL2 sees about 15 GiB), NVIDIA RTX 5060 Ti 8 GB (sm_120), Windows 11 + WSL2 Ubuntu 24.04. Execution and measurement only",
+   "identity": {
+    "cpu_model_contains": "250K",
+    "gpu_name_contains": "5060 Ti"
+   },
+   "cuda_arch": "sm_120",
+   "limits": [
+    "shared machine with a display: free VRAM varies",
+    "WSL2: no GPU persistence mode, page cache drop needs root inside the VM",
+    "mixed core types"
    ]
   },
-  "short": {
-   "q": 16,
-   "lengths": [
-    2,
+  "colab": {
+   "kind": "available",
+   "description": "Google Colab session. The assigned GPU, host CPU, RAM and session length vary per session; each session is recorded and treated as its own hardware",
+   "identity": null,
+   "cuda_arch": "per assigned GPU (sm_75 T4, sm_89 L4, sm_80 A100)",
+   "limits": [
+    "assignment and session limits vary (official FAQ)",
+    "results are written to the VM's local disk; copies to Drive happen after the timed region"
+   ]
+  },
+  "c7i.16xlarge": {
+   "kind": "cloud",
+   "provider": "AWS",
+   "region": "us-east-1",
+   "description": "32 cores / 64 vCPU Xeon Platinum 8488C, 128 GiB; the Phase 1 CPU",
+   "identity": {
+    "cpu_model_contains": "8488C",
+    "cores": 32,
+    "threads": 64,
+    "numa_nodes": 1
+   },
+   "thread_candidates": [
     32,
-    256
-   ],
-   "repetitions": 3,
-   "seconds": 5,
-   "select": "max geometric mean over lengths of median throughput"
+    64
+   ]
   },
-  "sustained": {
-   "q": 16,
-   "length": 32,
-   "seconds": 60,
-   "runs_per_candidate": 1,
-   "rule": "if the sustained order disagrees with the short selection, use the sustained winner and record the flip"
+  "c7i.8xlarge": {
+   "kind": "cloud",
+   "provider": "AWS",
+   "region": "us-east-1",
+   "description": "16 cores / 32 vCPU Xeon Platinum 8488C, 64 GiB",
+   "identity": {
+    "cpu_model_contains": "8488C",
+    "cores": 16,
+    "threads": 32
+   },
+   "thread_candidates": [
+    16,
+    32
+   ]
   },
-  "gpu_batch": "same design over {64, 256, 1024, b_max}; sustained check between the two best"
+  "g6e.2xlarge": {
+   "kind": "cloud",
+   "provider": "AWS",
+   "region": "us-east-1",
+   "description": "NVIDIA L40S 48 GB, 8 vCPU host",
+   "identity": {
+    "gpu_name_contains": "L40S"
+   },
+   "cuda_arch": "sm_89"
+  },
+  "g6e.4xlarge": {
+   "kind": "cloud",
+   "provider": "AWS",
+   "region": "us-east-1",
+   "description": "NVIDIA L40S 48 GB, 16 vCPU host",
+   "identity": {
+    "gpu_name_contains": "L40S"
+   },
+   "cuda_arch": "sm_89"
+  }
  },
- "cost_basis": {
-  "price": "official AWS on-demand price list, us-east-1 Linux, run date; SKU and file SHA-256 recorded",
-  "instance_hours": "EC2 launch to termination time",
-  "spot": "zone spot price at launch and hours lost to interruptions, reported separately",
-  "separate": [
-   "bills where available",
-   "storage",
-   "transfer"
+ "pilot": {
+  "machines": [
+   "lab-desktop",
+   "colab"
+  ],
+  "rule": "one available machine suffices; both are not required",
+  "sessions": 2,
+  "session_rule": "different times of day; each session records its own environment",
+  "fixed_tasks": [
+   [
+    "T1-curve",
+    "1m-quarter"
+   ],
+   [
+    "T1-curve",
+    "1s-week"
+   ],
+   [
+    "T2-policy-map",
+    "1m-quarter"
+   ],
+   [
+    "T2-policy-map",
+    "1s-week"
+   ]
+  ],
+  "reps_per_session": {
+   "cold": 3,
+   "warm": 3
+  },
+  "cold_kinds": {
+   "cache-cold": "new process after the page cache was dropped",
+   "process-cold": "new process; the page cache could not be dropped. Aggregated separately from cache-cold"
+  },
+  "steps": {
+   "cpu-baseline": "T1/T2 on both series, cold and warm, CPU with every logical CPU",
+   "threads": "CPU thread/affinity candidates from the machine's topology, short + sustained design",
+   "rates": "steady-state rates per (series, grid, L) at the chosen CPU configuration and at each validated GPU configuration; inputs of the time projection",
+   "gpu-rates": "G-inc and G-hyb at a small point and at the representative point, each at microbatch 64 and auto",
+   "microbatch": "GPU microbatch sweep up to b_max, with memory records; allocation failures are results",
+   "gpu-tasks": "T1/T2 on both series, cold and warm, on each GPU path that passed the device gate",
+   "diag": "T-diag points of the calibration split only (N in calibration_n), CPU and validated GPU paths",
+   "tref-rates": "steady-state rate of every T-ref cell (projection of the reference build)",
+   "tref-build": "the exact T-ref reference and its oracle, if the available hours allow",
+   "deadline": "deadline behaviour on a small problem (week prefix of 75,600 bars), budgets 2 and 5 s"
+  },
+  "thread_candidates": "from the observed topology: P-core set (if the P/E mapping is known), all physical cores, all logical CPUs; Colab: within the allocated CPUs. Formal-machine counts are never carried over",
+  "microbatch_sweep": [
+   16,
+   32,
+   64,
+   128,
+   256,
+   512,
+   1024,
+   2048,
+   4096
+  ],
+  "gpu_points": {
+   "small": "tdiag/count_24_n75600",
+   "representative": "calib/1s-week_P24_L32"
+  },
+  "deadline": {
+   "task": "pilot/T-ref-est_prefix75600",
+   "budgets_s": [
+    2,
+    5
+   ],
+   "reps": 3
+  },
+  "bench": {
+   "seconds": 5,
+   "repetitions": 3
+  },
+  "projection_vs_observed": "pilot projections of T1/T2 are compared with the observed warm E2E on the same machine before they are used for T-ref",
+  "never": [
+   "pooled with formal launch samples",
+   "used to choose m, Delta, tasks, accuracy targets or cells",
+   "a prefix reference used in place of the full-week reference for H4",
+   "held-out T-diag points run",
+   "a slow or failed run discarded"
   ]
  },
- "resource_records": [
-  "cgroup v2 memory.peak",
-  "min MemAvailable",
-  "pswpin/pswpout",
-  "major faults",
-  "CPU steal",
-  "1 Hz per-core MHz",
-  "nvidia-smi clocks and memory (GPU)",
-  "worker affinity at loop start and end"
- ]
+ "scaling": {
+  "actions": {
+   "none": "report the available-machine results; formal H3/H4 are 'not measured (no scaling)'",
+   "environment": "move to a controllable machine of a similar class (repeatable launches, controlled cold state)",
+   "cpu-host": "a larger CPU or GPU host CPU",
+   "gpu": "a different or larger GPU"
+  },
+  "record_items": [
+   "outputs_and_schedule",
+   "observations",
+   "alternatives_without_scaling",
+   "expected_effect",
+   "falsification",
+   "cost_and_stop"
+  ],
+  "projection_time": "T = T_setup + sum_c n_c / r_c + T_output; r_c measured on that machine, code, grid, length and strength; scenarios from the slowest, median and fastest repetition; lengths outside the measured range are flagged as extrapolated",
+  "projection_memory": "M = M_shared + b * M_trial (+ M_temporary), compared with the measured allocation (free at context creation - free after our allocations); free memory is read after context creation and before our allocations",
+  "verification": "the same workload re-run on the target machine; gain = baseline / observed (times) or observed / baseline (rates); 'supported' if gain >= the record's threshold, 'not supported' if below, 'indeterminate' if a run is missing or failed. Descriptive: one machine per side, no interval",
+  "budget_cap_usd": 250,
+  "budget_rule": "the cap is not raised automatically; the scaling record re-estimates all paid work from pilot rates and must fit the remaining cap",
+  "candidates": [
+   "c7i.16xlarge",
+   "c7i.8xlarge",
+   "g6e.2xlarge",
+   "g6e.4xlarge"
+  ]
+ },
+ "formal": {
+  "machines_from": "results/scaling/scaling-decision.json (formal.cpu, formal.gpu, formal.cpu_size_control)",
+  "verdicts": {
+   "unit": "instance launch",
+   "launch_pairs": 3,
+   "launch_pairs_if_sigma_high": 5,
+   "sigma_threshold": 0.047,
+   "interval": "paired t, 90%, on log ratios over launch pairs",
+   "margin": 1.25,
+   "h3_primary": [
+    [
+     "T1-curve",
+     "1m-quarter",
+     "cold"
+    ],
+    [
+     "T1-curve",
+     "1s-week",
+     "cold"
+    ],
+    [
+     "T2-policy-map",
+     "1m-quarter",
+     "cold"
+    ],
+    [
+     "T2-policy-map",
+     "1s-week",
+     "cold"
+    ],
+    [
+     "T-ref",
+     "1s-week",
+     "cold"
+    ]
+   ],
+   "h3_secondary": [
+    [
+     "T1-curve",
+     "1m-quarter",
+     "warm"
+    ],
+    [
+     "T1-curve",
+     "1s-week",
+     "warm"
+    ],
+    [
+     "T2-policy-map",
+     "1m-quarter",
+     "warm"
+    ],
+    [
+     "T2-policy-map",
+     "1s-week",
+     "warm"
+    ]
+   ],
+   "reps_per_launch": {
+    "T1/T2 cold": 3,
+    "T1/T2 warm": 3,
+    "T-ref cold": 1
+   },
+   "timeout_factor": 3.0,
+   "r2_tolerance": 0.15,
+   "parity_min_gain": 0.02,
+   "optimisation_go_ratio": 1.5,
+   "_optimisation_go_ratio": "decides only how much GPU optimisation effort goes in before the freeze; never a criterion for scaling"
+  },
+  "thread_calibration": {
+   "candidates_cpu_host": "physical cores, all vCPUs",
+   "grids": {
+    "set_task_threads": [
+     "P1",
+     "P24"
+    ],
+    "report_only": [
+     "P105"
+    ]
+   },
+   "short": {
+    "q": 16,
+    "lengths": [
+     2,
+     32,
+     256
+    ],
+    "repetitions": 3,
+    "seconds": 5,
+    "select": "max geometric mean over lengths of median throughput"
+   },
+   "sustained": {
+    "q": 16,
+    "length": 32,
+    "seconds": 60,
+    "runs_per_candidate": 1,
+    "rule": "if the sustained order disagrees with the short selection, use the sustained winner and record the flip"
+   },
+   "gpu_batch": "same design over {64, 256, 1024, b_max}; sustained check between the two best",
+   "candidates": "machines[profile].thread_candidates; a GPU host: physical cores and all vCPUs"
+  },
+  "path_selection": {
+   "point": "calib/1s-week_P24_L32",
+   "tie_band": 0.1,
+   "tie_choice": "inc"
+  },
+  "oracle": {
+   "starts_per_cell_shared": 2000,
+   "starts_per_cell_full": 200,
+   "stream_purpose": "oracle"
+  },
+  "gate": {
+   "starts_per_combination": 64,
+   "small_n": 4096,
+   "extra_lengths": [
+    6,
+    120
+   ]
+  },
+  "deadline": {
+   "drain_margin_rule": "1.5 x max(exit - stop) over 20 calibration runs (10 at 10 s, 10 at 300 s), rounded up to 10 ms",
+   "late_run": "all cells N=0"
+  },
+  "spot_verify_trials": 256,
+  "launch_order_seed": "20261010 + launch index",
+  "cuda_arch": [
+   "sm_75",
+   "sm_80",
+   "sm_89",
+   "sm_120"
+  ],
+  "cost_basis": {
+   "price": "official AWS on-demand price list, us-east-1 Linux, run date; SKU and file SHA-256 recorded",
+   "instance_hours": "EC2 launch to termination time",
+   "spot": "zone spot price at launch and hours lost to interruptions, reported separately",
+   "separate": [
+    "bills where available",
+    "storage",
+    "transfer"
+   ]
+  },
+  "resource_records": [
+   "cgroup v2 memory.peak",
+   "min MemAvailable",
+   "pswpin/pswpout",
+   "major faults",
+   "CPU steal",
+   "1 Hz per-core MHz",
+   "nvidia-smi clocks and memory (GPU)",
+   "worker affinity at loop start and end"
+  ],
+  "set_at": {
+   "machines": "scaling decision (Part II)",
+   "threads": "Stage A on the formal CPU; repeated before the freeze if CPU-best changed",
+   "m": "Stage A, from formal CPU launches only",
+   "cpu_best": "parity rule on the formal CPU, freeze",
+   "gpu_path": "path selection on the formal GPU",
+   "batch": "pre-freeze calibration on the formal GPU",
+   "drain_margin": "pre-freeze calibration on the formal machines",
+   "timeouts": "pre-freeze calibration on the formal CPU",
+   "warmup_trials": "pre-freeze calibration on the formal machines",
+   "toolchain": "freeze"
+  }
+ }
 }

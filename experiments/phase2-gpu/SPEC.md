@@ -1,26 +1,27 @@
 # Phase 2 implementation specification
 
-Companion to the [protocol](README.md); parameters in [`protocol.json`](protocol.json). This file says what has to
-be built and which behaviour is part of the contract. Section numbers are referenced from the protocol. Items marked
-**contract** may not change after the freeze without a dated amendment; everything else is implementation detail.
+Companion to the [protocol](README.md) (design r2); parameters in [`protocol.json`](protocol.json). This file says what
+has to be built and which behaviour is part of the contract. Items marked **contract** apply to every machine, pilot
+and formal alike, and may not change after the freeze without a dated entry in the protocol; everything else is
+implementation detail.
 
 ## 1. Components
 
 | Component | Where | Purpose |
 |---|---|---|
 | `sf::BatchEvaluator` interface | `engine/include/sf/` | Evaluate a batch of (cell, trial id) for all policies of a task; CPU and CUDA back ends behind one interface |
-| CPU back end | `engine/src/` | Wraps the existing incremental `Evaluator`, one per worker thread; CPU-best = this plus adopted parity items (§7) |
-| CUDA back end | `engine/cuda/`, CMake option `SF_CUDA=ON` (off by default) | G-inc or G-hyb (§6). The CPU-only build must not change when the option is off |
-| `sf_run` | `engine/apps/sf_run.cpp` | Task runner (§2), used for every Phase 2 timing |
-| `sf_gate` | `engine/apps/` + `engine/tests/` | Correctness gate C (§5) and the shared exactness checker |
-| Harness | `experiments/phase2-gpu/run_task.py` | External clock, cold / warm / deadline runs, run records (§8) |
-| Launch driver | `experiments/phase2-gpu/run_launch.sh` | One launch: gates, seeded condition order, upload of results, `--shutdown` |
-| Analysis | `experiments/phase2-gpu/analyze.py`, `make_figures.py` | Verdicts and figures from stored records only (§10) |
+| CPU back end | `engine/src/` | The incremental `Evaluator`, one per worker thread; CPU-best = this plus adopted parity items (§7) |
+| CUDA back end | `engine/cuda/`, CMake option `SF_CUDA=ON` (off by default) | G-inc or G-hyb (§6). The CPU-only build does not change when the option is off |
+| `sf_run` | `engine/apps/sf_run.cpp` | Task runner (§2), used for every Phase 2 timing, pilot and formal |
+| `sf_gate` | `engine/apps/` + `engine/tests/` | Correctness gate C (§5), the shared exactness checker, the reference oracle |
+| Experiment library | `experiments/phase2-gpu/p2/` | Tasks, machines and identity, the harness (§8), calibration designs, projections (§11), statistics |
+| Pilot and scaling | `pilot.py`, `scaling.py` | Part I and Part II of the protocol (§11) |
+| Formal | `calibrate.py`, `reference.py`, `freeze.py`, `launch.py`, `run_launch.sh` | Part III |
+| Analysis | `analyze.py`, `make_figures.py` | Verdicts and figures from stored records only (§10) |
 
-The CUDA build ships SASS only, so no JIT runs at start-up: `sm_89` (L40S, the measured build), `sm_120` (desktop
-RTX 5060 Ti: development, partial gate, D3), and `sm_75` (optional Colab T4 exactness check). Each architecture's
-binary is gated on its own; only the `sm_89` binary produces verdict timings. The CUDA toolkit version must support
-all three and is pinned at the freeze.
+The CUDA build ships SASS only, so no JIT runs at start-up. Each machine builds for its own architecture (`sm_120`
+lab RTX 5060 Ti; Colab `sm_75`/`sm_80`/`sm_89` as assigned; `sm_89` L40S), and each architecture's binary passes the
+gate on that device before any of its timings count. The formal GPU's toolkit and architecture are pinned at the freeze.
 
 ## 2. Task runner `sf_run`
 
@@ -119,9 +120,9 @@ recomputed in a different way.
 | Greedy merge | Sequential in S order within a trial | Never parallelised within a trial; parallelism over trials and policies only |
 
 Compiler: no `--use_fast_math`; `--fmad=false` for device code on the feature path; host code keeps the Phase 1 flags.
-Host results must not depend on the CPU: the desktop (AVX2) and the reference CPU (AVX-512) both build with
-`-march=native`, and GCC contracts floating-point expressions into FMA by default. Item 9 runs on both machines and
-the reference oracle subset is recomputed on the reference CPU (§5.3). If either differs, `-ffp-contract=off` is
+Host results must not depend on the CPU: an AVX2 machine (lab PC) and an AVX-512 machine (`c7i`) both build with
+`-march=native`, and GCC contracts floating-point expressions into FMA by default. Item 9 runs on every machine (pilot
+P0 and every formal CPU gate step), and every formal T-ref run regenerates the reference bits (§5.3). If either differs, `-ffp-contract=off` is
 applied to the event-factor and feature code, item 9 is re-checked, and the change is recorded.
 The Phase 2 CPU build must reproduce the 18 Phase 1 raw hit files byte for byte (§5.2 item 9) so that shared
 refactoring cannot drift.
@@ -151,17 +152,19 @@ comparison (k, start, S) and the NaN-tolerant equality in `sf_test`.
 | 9 | CPU only: the 18 Phase 1 hit files (64k prefix enumeration) reproduced byte for byte |
 | 10 | T-ref enumeration bits equal the CPU reference |
 
-The partial gate of Stage C runs items 1, 2, 5, 7, 8 and item 3 restricted to week / L = 32 / q = 16 / P24, first on
-the desktop GPU during development and then on the L40S before path selection counts. The full gate (D0) runs
-everything on the frozen `sm_89` build on the L40S; the same full gate on the desktop is required before D3 timings,
-and on Colab it is optional. The GPU gate compares against CPU-best golden outputs, plus the full method on item 5.
+The partial gate runs items 1, 2, 5, 7, 8 and item 3 restricted to week / L = 32 / q = 16 / P24. It runs on the
+device itself before any GPU timing of that machine counts: in pilot P0 for each path, and on the formal GPU before
+path selection. The full gate (D0) runs everything on the frozen build on the formal GPU. Host emulation (`emul`) runs
+the same kernel bodies for development checks but never counts as a device gate. The GPU gate compares against CPU-best
+golden outputs, plus the full method on item 5.
 
 ### 5.3 Where CPU references come from
 
-Golden outputs and the T-ref reference are computed on the desktop with the frozen commit. Their validity does not
-depend on the machine, but this is checked rather than assumed: the gate step of every Stage D CPU launch recomputes
-the golden outputs on the reference CPU, and every T-ref timing run there regenerates all reference bits; hashes must
-match. A mismatch stops Stage D until the cause is found (§4).
+Golden outputs and the T-ref reference (formal Stage B) may be computed on any machine with a gated build of the
+frozen commit, including the pilot machine. Their validity does not depend on the machine, but this is checked rather
+than assumed: the gate step of every formal CPU launch recomputes the golden outputs, and every formal T-ref timing run
+regenerates all reference bits; hashes must match. A pilot reference built before the freeze is used only after these
+hashes agree. A mismatch stops Stage D until the cause is found (§4).
 
 ## 6. GPU design constraints and memory plan
 
@@ -174,12 +177,15 @@ match. A mismatch stops Stage D until the cause is found (§4).
   Σ<sub>k</sub> [16·W<sub>k</sub> + 72·(cap<sub>k</sub> + 1)]: changed values and fixed volumes, two merged tails and
   tail lists, the both-set, peaks, and candidates. On the week at s<sub>floor</sub> = 1.5 this is about 21 MB.
   Shared resident state: series, heads, S and cap tables, base episodes.
-- **Batches.** The *microbatch* (trials resident at once) is the largest b with
-  b · working set + shared state ≤ 0.8 × free device memory after context creation. The *submission batch* (trials
-  per host round trip) is a multiple of it. Batch size per (series, policy grid) is chosen from {64, 256, 1,024,
-  b<sub>max</sub>} with the same design as the CPU thread count (protocol, *Implementations compared*): highest
-  geometric mean of median steady-state throughput over L ∈ {2, 32, 256} at q = 16 (3 × 5 s each), then a 60 s
-  sustained check of the two best at L = 32 that decides if it disagrees. It is fixed at the freeze. Allocation failures are results: they are recorded with the size that failed.
+- **Batches (contract for the sizing rule).** The *microbatch* (trials resident at once) is at most
+  b<sub>max</sub> = ⌊(0.8 × F − M<sub>shared</sub>) / M<sub>trial</sub>⌋, where F is the free device memory read
+  **once, after context creation and before any allocation of the back end**, so shared state is subtracted exactly
+  once. The back end reports F, total memory, M<sub>shared</sub>, M<sub>trial</sub>, scratch bytes, b<sub>max</sub>, and
+  the free memory after its allocations; the harness adds the `nvidia-smi` maximum during the run. Planned bytes
+  (M<sub>shared</sub> + b · M<sub>trial</sub>) are always reported next to the reported allocation (F − free after
+  allocation). The *submission batch* (trials per host round trip) is a multiple of the microbatch. Pilot: a sweep up to
+  b<sub>max</sub>. Formal: chosen per (series, grid) from {64, 256, 1,024, b<sub>max</sub>} with the thread-count design
+  (short + sustained). Allocation failures are results, recorded with the size that failed.
 - **Two-pass sizing** (count, then allocate exactly) is allowed if it stays exact.
 - **G-hyb**: candidates go to the host per trial; host ordering and merge use the CPU code.
 
@@ -203,57 +209,111 @@ decision.
 ## 8. Instrumentation and harness
 
 - **Select sub-stages** (CPU incremental and both GPU paths): peak test, candidate collection, S and sort,
-  per-policy merge, reset; timers in every build (overhead must be < 1% at the canonical point, checked once against
-  a timer-free build). In diagnostic mode only, counts are recorded: both-set size per row, neighbour comparisons,
-  peaks, candidates. Phase 1's `select_ms` is not read as greedy-merge cost.
-- **Harness.** Cold: `sync; echo 3 > /proc/sys/vm/drop_caches`, then `t0 = time.monotonic_ns()` immediately
-  before spawn, `t1` at `waitpid`. Warm: the server is started and receives a first task outside the timing (its
-  key matches the timed task). Then each submit is timed until the acknowledgement. Deadline: the harness passes
-  `t0 + B` and records late runs.
-- **Resource sampler** (contract for what is recorded, not how): each run executes in its own cgroup v2; the harness
-  reads `memory.peak` at exit and samples `MemAvailable`, `/proc/vmstat` (pswpin, pswpout), `/proc/stat` steal, and
-  per-core MHz from `/proc/cpuinfo` at 1 Hz, and on GPU instances `nvidia-smi` clocks and memory at 1 Hz. The
-  sampler runs on the harness side; its overhead is checked once at the canonical point (< 1% throughput change).
-  The runner records `getrusage` major faults and peak RSS (MiB, from `ru_maxrss`), and each worker's
-  `sched_getcpu()` and affinity mask at loop start and end.
-- **Profiling runs** (exploratory, never timed): `perf stat` with cycles, instructions, LLC loads and misses, and
-  stalled cycles where available, at the canonical point and the three calibration lengths; if the VM does not
-  expose a counter, that is recorded.
-- **Timeouts**: 3 × the CPU-best projected time of the condition (fixed at the freeze); the process is killed and
-  the run recorded as censored at the timeout.
-- **Order**: every launch runs all its conditions and repetitions in one order shuffled with seed
-  `20261010 + launch index`, written to the launch record before the first run.
+  per-policy merge, reset; timers in every build (overhead < 1% at the canonical point, checked once against a
+  timer-free build). Counts (both-set size, neighbour comparisons, peaks, candidates) in diagnostic mode only.
+- **Configurations.** A run's back end is a configuration: CPU (threads, optional CPU list for `taskset`, parity set,
+  warm-up trials) or GPU (path, microbatch, submission, host threads, warm-up trials), identified by a short key
+  (`cpu:t6@0-5:none`, `cuda:inc:b256`). OpenMP runs with `OMP_PLACES=cores OMP_PROC_BIND=spread` inside the CPU list.
+- **Clock (contract).** `t0 = time.monotonic_ns()` immediately before spawn (cold, deadline) or before the request
+  (warm); `t1` at `waitpid` or at the acknowledgement sent after the output fsync.
+- **Cold kinds (contract).** The harness runs `sync; echo 3 > /proc/sys/vm/drop_caches` (directly or by `sudo -n`).
+  If that succeeds the run is *cache-cold*, otherwise *process-cold*; the kind is in the record and the two are never
+  aggregated together. Formal launches refuse to start where the cache cannot be dropped.
+- **Warm blocks.** A server (`sf_run --serve`) is primed with a task of the same base-state key outside the timing;
+  then the timed requests of that condition follow. A reply with `base_cached = false` makes the run `not_warm`. The
+  server is closed before any cold or deadline run, so a cached state never holds memory during other runs.
+- **Order.** Cold repetitions are single items and each warm block is one item; all items of a step (pilot) or launch
+  (formal) run in one order shuffled with a recorded seed, written before the first run.
+- **Resource sampler** (contract for what is recorded): each run in its own cgroup v2 group where permitted
+  (`memory.peak` at exit); 1 Hz `MemAvailable`, `/proc/vmstat` swap and major faults, `/proc/stat` steal, per-core MHz;
+  on GPU machines `nvidia-smi` SM/memory clocks, memory used, power, utilisation. The runner records `getrusage` and each
+  worker's CPU and affinity at loop start and end.
+- **Identity during runs.** Every fixed-n output is compared with the reference hash (pilot: the first CPU result of
+  that label with 0 spot mismatches; formal: Stage B); a mismatch marks the run `identity_mismatch`, stops the pilot
+  step, and excludes that GPU path from later pilot steps. After a fixed-n run, outside the timing, 256 trial ids from
+  stream purpose `spot` are re-evaluated with the CPU method (§2.5).
+- **Profiling runs** (exploratory, never timed): `perf stat` cycles, instructions, LLC loads and misses, stalled cycles
+  where available; unavailable counters are recorded.
+- **Timeouts** (formal): 3 × the conservative CPU-best projection of the condition; the run is killed and recorded as
+  censored at exactly the timeout.
 
 ## 9. Run records and manifest
 
-Per launch, `env.json`: full commit SHA and dirty flag, binary SHA-256, compiler, nvcc, driver, and CUDA runtime
-versions, compile flags, `lscpu`, `numactl --hardware`, governor, THP, `OMP_*`, `nvidia-smi -q` (clocks, ECC,
-persistence, power limit), instance type, region, availability zone, instance id, tenancy, purchase option, launch
-and termination times (from the EC2 API, not run timers), on-demand price from the official AWS price list on the
-run date (SKU and SHA-256 of the price file), spot price of the zone at launch and interruption notices (spot only),
-hardware identity check result (protocol, *Execution environment*), input SHA-256s, stream version, Python package
-versions. Thread and batch calibration records, including the sustained check and any flip, go to
-`calibration.jsonl`.
+**Manifest** (`env.json`, per pilot session and per formal launch): profile and identity check, runtime (WSL2, Colab,
+EC2, Linux), git commit and dirty flag, binary SHA-256s, CMake cache (compiler, flags, CUDA architectures), compiler and
+`nvcc` versions, GPU state (model, driver, total/used/free memory, other processes, persistence mode), `nvidia-smi -q`,
+`lscpu`, topology (logical CPUs, physical cores, SMT, NUMA, P/E mapping and its source), `/proc/meminfo` totals,
+uptime, governor, THP, `OMP_*`, capabilities (cache drop, cgroup, persistence, perf, taskset), EC2 metadata and the
+official on-demand price on AWS, input SHA-256s, protocol SHA-256, Python packages.
 
-Per run, one line in `runs.jsonl`: condition, mode, repetition, position in the order, external times, stage
-timestamps, status (ok / late / timeout / error), output SHA-256, identity check result, peak RSS, cgroup peak memory,
-minimum `MemAvailable`, swap and major-fault counts, steal time, clock summary, start/end affinity, peak device
-memory, bytes transferred, and the per-worker or per-batch completion counts and times.
+**Runs** (`runs.jsonl`, one line per run): mode, cold kind, condition, configuration and key, position, external
+times, stage timestamps, status (ok / late / timeout / error / width_fail / not_warm / identity_mismatch /
+spot_mismatch), output SHA-256 and identity result, spot mismatches, runner record (device memory fields, transfers,
+select sub-stage sums, per-worker trials and affinity), cgroup peak, sampler record. **Benches** (`bench.jsonl`):
+point, metadata, configuration, rate, setup, device memory fields, sampler record, or the failure with its stderr.
 
-Layout: `results/<env>_<date>/launch-<i>-<cpu|gpu>/{env.json, calibration.jsonl, runs.jsonl, outputs/, gate/}`, `x2-c7i-8xlarge/` (same layout), plus `reference/`
-(T-ref bits, oracle log), `parity.md`, `protocol-freeze.json`, and `SHA256SUMS`. Large binaries (reference bits,
-per-trial hits) go into compressed archives with checksums. If the public repository cannot hold them, only their
-hashes and an external archive location are committed.
+**Layout.**
+
+```
+results/pilot/<label>/      pilot-plan.json, amendments.jsonl, checks/, hashes.json, reference/,
+                            session-<k>/{env.json, steps.jsonl, runs.jsonl, bench.jsonl, order_*.json, outputs/},
+                            pilot-summary.json, pilot-summary.md, figs/
+results/scaling/            scaling-decision.json, verification_<label>_action<i>.json
+results/formal/<label>/     reference/, calibration/<machine>/, protocol-freeze.json, d0/,
+                            launch-<i>-<cpu|gpu>/{env.json, order.json, runs.jsonl, calibration.jsonl, rates.jsonl,
+                            tdiag.jsonl, gate/, cpu_host/, outputs/, outputs_bits.tar.gz, SHA256SUMS},
+                            size-control/, verdicts_*.json, tables_*.md, figs/
+```
+
+Large binaries go into compressed archives with checksums; if the public repository cannot hold them, only hashes and
+an external archive location are committed.
 
 ## 10. Analysis
 
-- `analyze.py` computes every verdict from the stored records alone: R1, R2 (re-projection with the Phase 1
-  `scenario_space.project` method on Phase 2 rates), C, H3 and H4 (launch-pair log-ratios, t-intervals, categories,
-  censoring), cost per task on the stated basis (instance-hours × on-demand price; spot and interruptions
-  separately), D1 (non-negative least squares on rows scaled by 1/observed cost, held-out errors), and the
-  exploratory tables.
+- `analyze.py` computes every formal verdict from stored records alone: R1, R2 (projection with the launch's own rates
+  at every task length, §11), C, H3 and H4 (launch-pair log-ratios, t-intervals, categories, censoring; only
+  cache-cold runs enter cold conditions), cost per task, D1, and the exploratory D3 (`cross-env`) and spend summary.
 - D1 model (contract): per-trial cost t = β0 + β1·C + β2·C<sub>w</sub> + β3·W + β4·P (+ β5/b on the GPU), with
   C = Σ<sub>k</sub>(cap<sub>k</sub> + 1), C<sub>w</sub> = Σ<sub>k</sub>(cap<sub>k</sub> + 1)·max(1, ⌊w<sub>k</sub>/2⌋),
-  W = Σ<sub>k</sub>(L + w<sub>k</sub> − 1), P = policy count, b = batch size; sums over the task's windows k < K<sub>max</sub>.
-  Post-execution counts (both-set size, candidates) are used only in a separate explanatory fit.
-- Figures and tables are regenerated from stored results, and byte identity on regeneration is checked, as in Phase 1.
+  W = Σ<sub>k</sub>(L + w<sub>k</sub> − 1), P = policy count, b = batch size; sums over windows k < K<sub>max</sub>.
+  Non-negative least squares on rows scaled by 1/observed cost, fitted on the calibration split, judged on the 13
+  held-out points. Post-execution counts are used only in a separate explanatory fit.
+- Figures and tables are regenerated from stored results, and byte identity on regeneration is checked.
+
+## 11. Pilot, projections, and scaling records
+
+**Pilot plan (contract).** `pilot.py plan` writes `pilot-plan.json` once (never rewritten): purpose (pilot or
+verification), machine profile and identity, topology, GPU state, capabilities, git state, binary, input, task and
+protocol hashes, the steps, sessions, repetitions, thread candidates (from the topology; the P-core list is given
+explicitly where the kernel does not expose it), microbatch sweep, bench settings, available hours, stop rules, and any
+cut with its reason. Changes are appended to `amendments.jsonl` with a reason before the run they affect; each step
+records how many amendments applied. Steps refuse to run without passing P0 checks, a GPU step without a path that
+passed the device gate, and any step once the hours are used up ("not started (time)"). The reference build starts only
+if its conservative projection × 1.1 fits the remaining hours; otherwise the per-cell rates and the projection are the
+result.
+
+**Projections (contract).**
+
+- Fixed-n tasks: T = T<sub>setup</sub> + Σ<sub>cells</sub> n<sub>c</sub> / r(series, grid, L) (+ T<sub>output</sub>),
+  with r measured at q = 16 at every task length (`calib/` points, 3 × 5 s). Scenarios use the slowest (conservative),
+  median (base), and fastest (optimistic) repetition. An unmeasured length takes the nearest measured length in log L
+  and is flagged interpolated or extrapolated. Warm projections have no setup term.
+- T-ref: Σ<sub>c</sub> (N − L<sub>c</sub> + 1) / r<sub>c</sub> from each cell's own rate (`pilot/tref-cell_c*`),
+  9,071,175 trials in total.
+- Before a pilot projection is used for T-ref, the T1/T2 warm projections of the same configuration are compared with
+  the observed warm E2E (observed / base is reported).
+- Memory: planned M<sub>shared</sub> + b · M<sub>trial</sub> against the reported allocation and the `nvidia-smi`
+  maximum (§6).
+
+**Scaling record.** `scaling.py draft` copies the pilot observations, failures, environments, and a catalogue of every
+measured metric with its value; a person completes the six items of the protocol and the actions. `scaling.py check`
+(required by every later step) rejects: any `TODO`; an action outside {none, environment, cpu-host, gpu}; `none` mixed
+with other actions; a target that is not a machine profile; an action without metrics; a metric without a baseline
+value, the three predicted values, or a gain threshold ≥ 1; a missing cost; formal machines without an identity rule;
+spent + planned above the cap; a pilot summary changed since the draft. Formal steps also require the record to be
+committed and unchanged.
+
+**Metrics.** `e2e`: task, series, mode (cache-cold, process-cold, warm) and configuration, value = median over all ok
+runs of all sessions. `rate`: task point and configuration, value = median trials/s over ok benches (the 1 s microbatch probe excluded). The
+configuration may be a key or `best`, `best-cpu`, `best-gpu` (each machine's own best). Gain and verdicts as in the
+protocol (P4).

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 #include "sf/scan.hpp"
 
@@ -25,19 +26,48 @@ double median_range(const SeriesView& x, int32_t length) {
   return 0.5 * (lo + hi);
 }
 
+float event_price_factor(double strength, double median_range_L, int32_t length, int32_t j) {
+  const double t = (j + 0.5) / length;
+  const double shape = t < 2.0 / 3.0 ? t / (2.0 / 3.0) : (1.0 - t) / (1.0 / 3.0);
+  return static_cast<float>(1.0 + strength * median_range_L * shape);
+}
+
+float event_volume_factor(double strength) { return static_cast<float>(1.0 + strength); }
+
+EventTable make_event_table(int32_t length, double strength, double median_range_L) {
+  EventTable t;
+  t.length = length;
+  t.strength = strength;
+  t.price.resize(length);
+  for (int32_t j = 0; j < length; ++j) t.price[j] = event_price_factor(strength, median_range_L, length, j);
+  t.volume = event_volume_factor(strength);
+  return t;
+}
+
 void apply_event(const Series& base, const TestEvent& e, double median_range_L, Series& dst) {
   const bool price = e.kind != EventKind::Volume, vol = e.kind != EventKind::Price;
-  const float vol_factor = static_cast<float>(1.0 + e.strength);
+  const float vol_factor = event_volume_factor(e.strength);
   for (int32_t j = 0; j < e.length; ++j) {
-    const double t = (j + 0.5) / e.length;
-    const double shape = t < 2.0 / 3.0 ? t / (2.0 / 3.0) : (1.0 - t) / (1.0 / 3.0);
-    const float factor = static_cast<float>(1.0 + e.strength * median_range_L * shape);
+    const float factor = event_price_factor(e.strength, median_range_L, e.length, j);
     const int64_t p = e.start + j;
     if (price) {
       dst.low[p] = base.low[p] * factor;
       dst.high[p] = base.high[p] * factor;
     }
     if (vol) dst.volume[p] = base.volume[p] * vol_factor;
+  }
+}
+
+void apply_event(const Series& base, const TestEvent& e, const EventTable& t, Series& dst) {
+  if (t.length != e.length || t.strength != e.strength) throw std::invalid_argument("event table does not match event");
+  const bool price = e.kind != EventKind::Volume, vol = e.kind != EventKind::Price;
+  for (int32_t j = 0; j < e.length; ++j) {
+    const int64_t p = e.start + j;
+    if (price) {
+      dst.low[p] = base.low[p] * t.price[j];
+      dst.high[p] = base.high[p] * t.price[j];
+    }
+    if (vol) dst.volume[p] = base.volume[p] * t.volume;
   }
 }
 

@@ -30,3 +30,6 @@ build/
 
 # Smoke runs (run_sweep.py --quick) are not published
 experiments/*/results/smoke_*/
+
+# Phase 2: raw drain-calibration runs (their summaries go into the results)
+experiments/phase2-gpu/results/_drain_runs/
