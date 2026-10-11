@@ -1,6 +1,6 @@
-numpy
-pandas
-requests
-matplotlib
-tabulate
-scipy
+numpy==2.5.3
+pandas==3.0.6
+requests==2.34.2
+matplotlib==3.11.2
+tabulate==0.10.0
+scipy==1.18.1

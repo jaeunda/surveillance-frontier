@@ -1,6 +1,6 @@
 # Phase 2 — GPU engine: what limits the exact computation on the machines at hand, and does the matching resource help?
 
-Status: **design r2, not started** (2026-10-10). No Phase 2 measurement has been run. This file is the protocol;
+Status: **design r2.1, not started** (2026-10-11). No Phase 2 measurement has been run. This file is the protocol;
 [`SPEC.md`](SPEC.md) is the implementation specification, [`protocol.json`](protocol.json) holds every parameter, and
 [`IMPLEMENTATION.md`](IMPLEMENTATION.md) records how the code carries it out.
 
@@ -10,6 +10,17 @@ correctness work. r2 reverses the order of evidence: the work is first run on a 
 measured, and a resource is added only for an observed reason and checked against that reason. The estimand, the
 tasks and their accuracy, the exactness contract, the trial stream, the estimator, and the verdict rules of H3/H4 are
 unchanged from r1. Because nothing had been measured, r2 replaces r1 as a whole rather than amending it.
+
+**Amendment r2.1 (2026-10-11, before any measurement).** An independent preflight audit of r2 (commit `fc2cd7a`)
+found rules that the records could not enforce and two rules that were wrong as stated. Changed rules: (1) a condition
+with a censored (timed-out) run gets **no category**; r2 let the other device's advantage stand, but an interval from
+timeout-substituted values is not a confidence bound. (2) **D1 is judged on 6 held-out points**, not 13: 7 of the 13
+have the same workload as a calibration or T-ref cell point that runs before D1; they are reported apart. (3) The
+**drain margin is measured from the cutoff** (from which no new work is issued) to process exit, so work in flight at
+the cutoff is inside it; r2 measured from the end of the loop. (4) Validity rules are now explicit and enforced before
+any verdict: launch slots and attempts, the registered pair order, distinct instances, complete records, gates that
+show what they claim (below). (5) The pilot adds a CPU **parity step** and runs P0 **per session**. Tasks, accuracy,
+the estimand, Δ, the m rule, budgets and checkpoints are unchanged.
 
 ## Starting point
 
@@ -77,7 +88,11 @@ tasks (all 136 week cells, several series) are not part of this protocol.
 policy lists in `protocol.json`): tail cap s<sub>floor</sub> 1.5, 2.0, 3.0; policy count 1, 3, 24; K<sub>max</sub> 8, 15;
 L 2, 32, 256 (calibration) and 8, 128 (held out); q 0, 16, 256; series length N as nested prefixes of the week
 75,600, 151,200, 302,400 (calibration) and 604,800 (held out); GPU batch 64, 256, 1,024, b<sub>max</sub>, crossed with
-s<sub>floor</sub> {1.5, 3.0} × L {2, 256} at N = 302,400. The 13 held-out points are never run before the formal D1.
+s<sub>floor</sub> {1.5, 3.0} × L {2, 256} at N = 302,400. The 13 held-out task files are never run before the formal
+D1, but 7 of them (L 2, 8, 128, 256; P24 at q 16; K<sub>max</sub> 15; q 256) have the workload of a calibration or T-ref
+cell point that the pilot and the pre-freeze calibration run. D1 is therefore judged on the other 6 (s<sub>floor</sub>
+1.5, 2.0, 3.0; one policy; K<sub>max</sub> 8; q 0), listed in `protocol.json` (`t_diag.heldout_judged`) and
+checked by workload fingerprint (r2.1).
 
 ## Implementations
 
@@ -93,6 +108,8 @@ against the whole GPU machine (GPU + host), and a GPU result is always reported 
 **Parity**: every device-independent improvement considered for the GPU (lookup tables for event factors, S, and caps;
 sparse count representation; scratch reuse; batch scheduling) is also tried on the CPU, and adopted there if it passes
 the CPU gate and raises the geometric-mean throughput of three calibration points by ≥ 2% ([`SPEC.md` §7](SPEC.md#7-cpu-parity)).
+The 2% is a registered selection rule, not a test; the configurations compared are measured interleaved in a seeded
+order. A CPU result before the parity step is the machine's starting configuration, not CPU-best.
 
 ---
 
@@ -107,15 +124,17 @@ One available machine suffices; using both is not required. The lab PC is used f
 
 | Step | Work | Passes on |
 |---|---|---|
-| **P0 plan and feasibility** | `pilot-plan.json` written and committed before the first timing: machine, code, binary, input, and task hashes, steps, repetitions, stop rules, available hours. CPU regression (`sf_test`, `sf_test2`, Phase 1 hit files), stream and interval checks, CPU gate; **the partial gate on the device itself** for each GPU path | Which GPU paths passed on real hardware; emulation and a successful build never count as device execution |
+| **P0 plan and feasibility** | `pilot-plan.json` written and committed before the first timing: machine, code fingerprint, binary, input, and task hashes, steps, repetitions, stop rules, available hours, cold kind. Then **per session**: CPU regression (`sf_test`, `sf_test2`, Phase 1 hit files), stream and interval checks, CPU gate, and **the partial gate on that session's device** for each GPU path | Which GPU paths passed on that session's hardware; emulation and a successful build never count as device execution. A session whose hardware, code or binaries differ from its checks does not run |
 | **P1 baseline** | `cpu-baseline`: T1 and T2 on both series, cold and warm, CPU on every logical CPU. `gpu-rates`: G-inc and G-hyb at a small and the representative point (week, L = 32, q = 16, P24), microbatch 64 and b<sub>max</sub>. `gpu-tasks`: T1 and T2 cold and warm on every path that passed P0 | E2E with stage times, output identity with the CPU, failures and their conditions |
-| **P2 diagnosis** | `threads`: candidates from the machine's topology (P-core set, physical cores, all logical CPUs). `microbatch`: sweep up to b<sub>max</sub> with memory records. `rates`: steady-state rates at every task length. `diag`: T-diag calibration split. `tref-rates`: every T-ref cell. `tref-build`: the reference and its oracle if the hours allow. `deadline`: H4 deadline mechanics on a 75,600-bar prefix | Throughput curves over threads and microbatch, RAM/VRAM peaks, host vs device time, projections of everything still to run |
+| **P2 diagnosis** | `threads`: candidates from the machine's topology (P-core set, physical cores, all logical CPUs, within the CPUs the session may use). `parity`: the CPU parity rule at that choice. `microbatch`: sweep up to b<sub>max</sub> with memory records. `rates`: steady-state rates at every task length. `diag`: T-diag calibration split. `tref-rates`: every T-ref cell. `tref-build`: the reference and its oracle if the hours allow. `deadline`: H4 deadline mechanics on a 75,600-bar prefix | Throughput curves over threads and microbatch, RAM/VRAM peaks, host vs device time, projections of everything still to run |
 
 **Repetitions.** Two sessions at different times of day; per session, T1/T2 cold 3 and warm 3. Warm repetitions of a
 condition run as one block after one untimed priming task. A smaller plan is allowed only if recorded before the first
 measurement (`--cut`); later changes are dated amendments made before the run they affect. Every run is kept,
-including slow, failed, late, out-of-memory, and retried ones. Each session reports its own median and range;
-repetitions on one PC are not independent launches, and no interval about hardware is computed from them.
+including slow, failed, late, out-of-memory, timed-out, lost (started without a terminal record) and retried ones.
+Each session reports its own median and range; repetitions on one PC are not independent launches, and no interval
+about hardware is computed from them. Threads, parity and microbatch are chosen per session; sessions on different
+hardware (every Colab reassignment may be) are never pooled. Every run is bounded by the plan's remaining hours.
 
 **Measurement in the pilot.** The harness times from just before spawn to process exit after the output fsync, with
 the runner's S0–S8 stamps for the breakdown (initialisation, transfer, loop, output). If the page cache cannot be dropped
@@ -146,7 +165,10 @@ not dropped from the formal comparison on that basis, and the pilot never runs t
 
 The action is one of: **none** (report the pilot; formal H3/H4 "not measured (no scaling)"), **environment**
 (a controllable machine of a similar class: repeatable launches, controlled cold state), **cpu-host** (a larger CPU or
-GPU host), **gpu** (a different or larger GPU). Projections use
+GPU host), **gpu** (a different or larger GPU). Each action names its metrics before any paid run: e2e and rate for
+speed; completion (ok runs / started runs) and spread (max / min time) for an environment action, whose claim is
+control, not speed. Every e2e-type metric names its cold kind, and P4 re-runs the same kind (a process-cold baseline
+is verified process-cold). Projections use
 
 - time: T ≈ T<sub>setup</sub> + Σ<sub>c</sub> n<sub>c</sub> / r<sub>c</sub> + T<sub>output</sub>, with r<sub>c</sub>
   measured on that machine, code, grid, length, and strength (T-ref: n<sub>c</sub> = N − L + 1, 9,071,175 trials);
@@ -170,18 +192,21 @@ never attributed to one resource alone; where possible the target re-runs the pi
 and its own best setting.
 
 **P4: verification.** The target machine runs the same workload through the same pilot harness
-(`pilot.py plan --purpose verification`). Each metric of the record gets gain = baseline / observed (times) or
+(`pilot.py plan --purpose verification`, which requires the record to pass `scaling.py check` and be committed). Each metric of the record gets gain = baseline / observed (times) or
 observed / baseline (rates): **supported** if gain ≥ the record's threshold, **not supported** below it,
 **indeterminate** if the run is missing or failed. Whether the gain fell inside the predicted range is reported too. This
 is descriptive (one machine per side, medians, no interval); an unexpected absence of gain is a result.
 
 **Budget.** The cap stays at **USD 250** and is not raised automatically. The record re-estimates every paid step from
-pilot rates and must fit what remains; the formal comparison stops at a launch boundary when the next complete launch
-pair cannot be paid for.
+pilot rates, itemised (P0 and gates, two Stage A launches, Stage B, calibration on both machines, D0, m pairs with
+CPU-host and T-ref, H4 at 2 × m × 10 × 440 s of budgets, retries, storage), and must fit what remains; the formal
+comparison stops at a launch boundary when the next complete launch pair cannot be paid for (checked when a pair's
+first launch starts, from the operator's billed total and the recorded EC2 costs).
 
 ## Part III. Formal comparison
 
-Runs only if the committed scaling record says so, on the machines it names (default candidates: `c7i.16xlarge` for
+Runs only if the committed scaling record says so and every scaling action has its committed P4 verification, on
+the machines it names (default candidates: `c7i.16xlarge` for
 the CPU, an L40S `g6e` for the GPU). It is a comparison **conditional on those machines**; it is not a claim about the
 best CPU or GPU.
 
@@ -194,7 +219,7 @@ best CPU or GPU.
 | C | The GPU implementation is bit-identical to the CPU reference over the full gate | 0 mismatches in every gate item |
 | **H3** | The GPU reaches the same result in less end-to-end time | Category per condition (verdict rules) |
 | **H4** | At equal wall-clock budget, the GPU's estimate is closer to the exact reference | Category per budget (verdict rules) |
-| D1 | A per-device cost model with pre-execution inputs predicts per-trial cost on held-out conditions | Per device: median \|relative error\| ≤ 0.20 and maximum ≤ 0.50 over the 13 held-out points |
+| D1 | A per-device cost model with pre-execution inputs predicts per-trial cost on held-out conditions | Per device: median \|relative error\| ≤ 0.20 and maximum ≤ 0.50 over the 6 held-out points whose workload never ran before D1 (r2.1); the other 7 reported apart |
 
 Exploratory, no verdict: **D2** (end-to-end winner predicted from D1 plus fixed costs, against trivial predictors);
 **D3** (consistency of per-point GPU rates between the pilot GPU and the formal GPU; the pilot was seen before the
@@ -206,7 +231,8 @@ Anything added after results are seen is labelled post hoc.
 ### Verdict rules
 
 **Unit.** The independent unit is an **instance launch**; runs inside a launch are technical repetitions. Stage D uses
-m launch pairs (one CPU and one GPU launch each, same region and calendar day, alternating which goes first). T1/T2:
+m launch pairs (one CPU and one GPU launch each, on distinct instances, same region and UTC calendar day; odd pairs
+start with the CPU launch, even pairs with the GPU launch). T1/T2:
 3 cache-cold runs and one warm block of 3 per launch, launch value = median; T-ref: 1 cold run per launch; T-ref-est:
 10 seeds per launch pair and budget, the same seeds on both devices.
 
@@ -224,21 +250,27 @@ exp(mean ℓ ± t<sub>0.95, m−1</sub> · SD(ℓ)/√m). Equivalence margin **�
 | Inconclusive | otherwise; "direction X, size unresolved" if the interval excludes 1 |
 
 Primary conditions (cold): T1 and T2 on both series, T-ref. Secondary (warm): T1 and T2 on both series. Each gets its
-own verdict; no pooled claim. A run must reproduce the reference output hash, and formal cold runs must be cache-cold.
-Timeouts: 3 × the conservative CPU-best projection of the condition; a stopped run counts as exactly the timeout, which
-can support the other device's advantage but never the stopped device's advantage or equivalence.
+own verdict; no pooled claim. A run must reproduce the reference output hash (for fixed n: the counts and every
+per-trial bit), and formal cold runs must be cache-cold. Timeouts: 3 × the conservative CPU-best projection of the
+condition; a stopped run counts as exactly the timeout. **A condition with any stopped run gets no category** (r2.1):
+the interval computed from timeout-substituted values is reported as description only.
 
 **H4.** Each run is a cold process with a deadline B (setup, aggregation, intervals, and fsync inside B). Trials are
 ordered round-robin over the 15 cells and only the contiguous prefix counts, giving N<sub>c</sub>(B). Per run, MSE over
 the 360 rates; per device and pair, RMSE over its 10 seeds; ε<sub>i</sub> = RMSE<sub>CPU,i</sub> / RMSE<sub>GPU,i</sub>,
 with the H3 interval and categories. N<sub>c</sub> = 0 is estimated as 1/2; a late or invalid run counts as
 N<sub>c</sub> = 0 everywhere; nothing is dropped. Intervals are reported only at checkpoints 2<sup>8</sup> … 2<sup>18</sup>
-with α/(360·11) each. Every live run's (N<sub>c</sub>, k<sub>c</sub>) must equal what the reference bits give for the
-same trial ids. Replay of stored bits at the measured N(B) is reported separately and is not H4.
+with α/(360·11) each. Every live run's (G, N<sub>c</sub>, k<sub>c</sub>) must equal what the reference bits give for the
+same trial ids, each device needs exactly its 10 registered seeds per pair and budget, and the reference must carry
+the frozen hashes; a violation is a broken identity contract, not a slow run, and leaves that budget without a
+category ("invalid"). Replay of stored bits at the measured N(B) is reported separately and is not H4.
 
 **Status of every item.** Judged; **not measured** (a prerequisite failed, or the scaling record chose not to proceed;
-the reason is recorded); **incomplete** (fewer than m complete pairs, a time box, or the budget). A whole launch is the
-smallest unit dropped. "Not measured" and "incomplete" are never reported as an advantage or equivalence. A comparison
+the reason is recorded); **incomplete** (fewer than m valid pairs, a time box, or the budget); **censored** (H3, a
+stopped run); **invalid** (H4, identity contract broken). A whole launch is the smallest unit dropped: a launch counts
+only if every planned run is present once, every fixed-n and T-ref run is ok or censored, cache-cold when cold,
+reproduces the reference, and no started run lacks its record. An excluded launch is replaced by a new attempt of the
+same slot (same order and seeds); attempts are never resumed, reused or overwritten. "Not measured" and "incomplete" are never reported as an advantage or equivalence. A comparison
 is invalid if the trial stream, estimator, or measurement boundary differ between devices, if parity was skipped
 without a recorded reason, if a non-identical output is timed, or if tasks, accuracy, Δ, budgets, or cells changed after
 results were seen.
@@ -247,13 +279,13 @@ results were seen.
 
 | Stage | Work | Exit | If not met |
 |---|---|---|---|
-| A. CPU runner | On the formal CPU, 2 launches: thread calibration (that machine's candidates), rates at every task length, R1, R2, σ → m | R1 passes | No speed verdicts until fixed |
-| B. Reference | T1/T2 reference hashes, T-ref enumeration with CPU-best and the oracle (2,000 shared + 200 full re-evaluations per cell), golden gate; any machine with a gated build | Oracle 0 mismatches | T-ref H3 and H4 "not measured" |
-| C. GPU path | On the formal GPU: partial gate for both paths, batch calibration per path, path selection (higher steady-state rate at the representative point; within 10%, G-inc) | Chosen path passes the partial gate | GPU side "not measured"; CPU results reported |
-| Pre-freeze | Parity adoption, threads, rates and timeouts (formal CPU); batch, drain margins, warm-up counts (both); optional optimisation: if the chosen path is projected ≥ 1.5x faster than CPU-best on a primary condition, it is optimised further, otherwise frozen as a prototype | All values recorded | — |
-| Freeze | `protocol-freeze.json` with the scaling record's hash, machines, m, configurations, timeouts, reference hashes | Committed | — |
-| D0. Full gate | Gate C on the frozen GPU build over every reported task range | 0 mismatches | Fixes, re-freeze, full gate again |
-| D. Comparison | m launch pairs with all conditions; D1 on pair 1; CPU-host on every GPU launch; X2 if named | — | Status rules above |
+| A. CPU runner | On the formal CPU, 2 launches on distinct instances: CPU gate, item 9, interval and stream checks first; thread calibration per (series, grid) (that machine's candidates), rates at every task length, R1, R2, σ → m | R1 passes; both gates have the same golden hashes | No speed verdicts until fixed |
+| B. Reference | Golden CPU gate and item 9 first; T1/T2 reference hashes, T-ref enumeration with CPU-best and the oracle (2,000 shared + 200 full re-evaluations per cell); any machine with a gated build | Oracle 0 mismatches on the recorded bits | T-ref H3 and H4 "not measured" |
+| C. GPU path | On the formal GPU: partial device gate for both paths with the current code (required before any GPU timing), host threads per (series, grid), batch calibration per path among integer candidates up to the measured b<sub>max</sub>, path selection (higher steady-state rate at the representative point; within 10%, G-inc) | Chosen path passes the partial gate | GPU side "not measured"; CPU results reported |
+| Pre-freeze | Parity adoption, threads (with the adopted parity), rates and timeouts (formal CPU, each grid with its own configuration); batch, drain margins and drain checks with the frozen warm-up and submission (both); optional optimisation: if the chosen path is projected ≥ 1.5x faster than CPU-best on a primary condition, it is optimised further, otherwise frozen as a prototype | All values recorded | — |
+| Freeze | `protocol-freeze.json` with the scaling record's hash, the code fingerprint, machines, m, pairs and their order, configurations and keys, timeouts, reference and golden hashes, pair cost estimate; refused if any prerequisite above is missing or failed | Committed | — |
+| D0. Full gate | Gate C on the frozen GPU build over every reported task range (all items, 64 starts), with the frozen code | 0 mismatches, committed | Fixes, re-freeze, full gate again |
+| D. Comparison | m launch pairs with all conditions; each launch first gates on its instance; D1 on pair 1; CPU-host on every GPU launch (its own thread choice); X2 if named (its own thread choice) | — | Status rules above |
 
 The 1.5x rule only sets optimisation effort; it is never a reason to scale hardware. The formal GPU's best path and
 batch are re-established there even if the pilot chose otherwise.

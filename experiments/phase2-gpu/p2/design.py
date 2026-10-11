@@ -4,11 +4,12 @@ Every choice is made by the registered rule from these measurements and logged w
 
 import json
 import math
+import random
 import statistics
 from pathlib import Path
 
 from . import harness
-from .common import FORMAL, ROOT, append_jsonl, geomean, read_json, run_logged
+from .common import FORMAL, ROOT, append_jsonl, geomean, new_attempt_dir, read_json, run_logged
 from .tasks import calib_task, point
 
 TC = FORMAL["thread_calibration"]
@@ -32,35 +33,45 @@ def median_rate(records):
     return statistics.median(ok) if len(ok) == len(records) and ok else None
 
 
-def choose(series, grid, candidates, log, *, build, label):
+def choose(series, grid, candidates, log, *, build, label, seed=0):
     """Short + sustained design for one (series, grid) among candidate configurations.
 
     Short: q = 16, L in {2, 32, 256}, 3 x 5 s each; the candidate with the highest geometric mean of the three median
-    throughputs wins. Sustained: the two best once for 60 s at L = 32; if their order disagrees with the short one,
-    the sustained winner is used and the flip recorded. A candidate with any failed run is out (recorded).
+    throughputs wins. The short runs go in rounds (one repetition of every (candidate, L) per round), each round in an
+    order shuffled with `seed`, so drift over time (heat, other load) does not fall on one candidate. Sustained: the
+    two best once for 60 s at L = 32, in seeded order; if their order disagrees with the short one, the sustained
+    winner is used and the flip recorded. A candidate with any failed run is out (recorded).
     Returns the decision record; its "choice" is the candidate's config_key.
     """
     short, sus_spec = TC["short"], TC["sustained"]
     scores, failed = {}, {}
     by_key = {harness.config_key(c): c for c in candidates}
-    for key, cfg in by_key.items():
-        meds = []
-        for L in short["lengths"]:
-            recs = [bench_point(calib_task(series, grid, L), cfg, short["seconds"], log, build=build,
-                                label=f"{label}-short", rep=rep, series=series, grid=grid, L=L)
-                    for rep in range(short["repetitions"])]
-            meds.append(median_rate(recs))
+    rng = random.Random(seed)
+    recs = {(k, L): [] for k in by_key for L in short["lengths"]}
+    order = []
+    for rep in range(short["repetitions"]):
+        rnd = [(k, L) for k in by_key for L in short["lengths"]]
+        rng.shuffle(rnd)
+        for k, L in rnd:
+            order.append([k, L, rep])
+            recs[(k, L)].append(bench_point(calib_task(series, grid, L), by_key[k], short["seconds"], log, build=build,
+                                            label=f"{label}-short", rep=rep, series=series, grid=grid, L=L))
+    for key in by_key:
+        meds = [median_rate(recs[(key, L)]) for L in short["lengths"]]
         if any(m is None for m in meds):
             failed[key] = "a short run failed"
             continue
         scores[key] = geomean(meds)
     if not scores:
-        rec = {"kind": f"{label}-decision", "series": series, "grid": grid, "choice": None, "failed": failed}
+        rec = {"kind": f"{label}-decision", "series": series, "grid": grid, "choice": None, "failed": failed,
+               "order": order, "seed": seed}
         append_jsonl(log, rec)
         return rec
     ranked = sorted(scores, key=lambda k: -scores[k])
     sustained = {}
-    for key in ranked[:2]:
+    top = ranked[:2]
+    rng.shuffle(top)
+    for key in top:
         r = bench_point(calib_task(series, grid, sus_spec["length"]), by_key[key], sus_spec["seconds"], log,
                         build=build, label=f"{label}-sustained", series=series, grid=grid, L=sus_spec["length"])
         if r.get("status") == "ok":
@@ -68,9 +79,9 @@ def choose(series, grid, candidates, log, *, build, label):
     sus_pick = max(sustained, key=sustained.get) if sustained else ranked[0]
     flip = sus_pick != ranked[0]
     rec = {"kind": f"{label}-decision", "series": series, "grid": grid, "short_geomean": scores,
-           "short_choice": ranked[0], "sustained": sustained, "sustained_choice": sus_pick, "flip": flip,
-           "choice": sus_pick if flip else ranked[0], "config": by_key[sus_pick if flip else ranked[0]],
-           "failed": failed}
+           "short_choice": ranked[0], "sustained": sustained, "sustained_order": top, "sustained_choice": sus_pick,
+           "flip": flip, "choice": sus_pick if flip else ranked[0], "config": by_key[sus_pick if flip else ranked[0]],
+           "failed": failed, "order": order, "seed": seed}
     append_jsonl(log, rec)
     return rec
 
@@ -78,20 +89,31 @@ def choose(series, grid, candidates, log, *, build, label):
 PARITY_POINTS = ["week_P24_L32", "week_P1_L2", "quarter_P24_L256"]
 
 
-def parity(cpu_cfg, log, md_path, *, build, min_gain):
+def parity(cpu_cfg, log, md_path, *, build, min_gain, seed=0):
     """CPU parity rule: PC1..PC6 in order; a candidate is adopted if the CPU gate passes with it and the geometric
-    mean of the three points' median throughput (3 x 5 s each) rises by >= min_gain. Returns the adopted set."""
+    mean of the three points' median throughput (3 x 5 s each) rises by >= min_gain. The adopted set so far and the
+    candidate set are measured interleaved (rounds of both, seeded order) so drift does not favour either. The 2%
+    threshold is a registered selection rule, not a test. Returns the adopted set."""
     adopted = []
-    lines = ["# CPU parity log", "", "| Candidate | Gate | Geo-mean gain | Decision | Reason |", "|---|---|---|---|---|"]
+    rng = random.Random(seed)
+    lines = ["# CPU parity log", "", f"Configuration: {harness.config_key(cpu_cfg)}; seed {seed}", "",
+             "| Candidate | Gate | Geo-mean gain | Decision | Reason |", "|---|---|---|---|---|"]
 
-    def throughput(pcs):
-        cfg = {**cpu_cfg, "parity": ",".join(pcs) or "none"}
-        meds = []
-        for pt in PARITY_POINTS:
-            recs = [bench_point(point(f"parity/{pt}"), cfg, 5, log, build=build, label="parity", rep=k)
-                    for k in range(3)]
-            meds.append(median_rate(recs))
-        return geomean(meds) if all(meds) else None
+    def compare(before_set, after_set):
+        recs = {(w, pt): [] for w in ("before", "after") for pt in PARITY_POINTS}
+        for rep in range(3):
+            rnd = [(w, pt) for w in ("before", "after") for pt in PARITY_POINTS]
+            rng.shuffle(rnd)
+            for w, pt in rnd:
+                pcs = before_set if w == "before" else after_set
+                cfg = {**cpu_cfg, "parity": ",".join(pcs) or "none"}
+                recs[(w, pt)].append(bench_point(point(f"parity/{pt}"), cfg, 5, log, build=build, label="parity",
+                                                 rep=rep, which=w))
+        out = {}
+        for w in ("before", "after"):
+            meds = [median_rate(recs[(w, pt)]) for pt in PARITY_POINTS]
+            out[w] = geomean(meds) if all(meds) else None
+        return out["before"], out["after"]
 
     for pc in ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6"]:
         if pc == "PC5":
@@ -102,7 +124,7 @@ def parity(cpu_cfg, log, md_path, *, build, min_gain):
         gate = run_logged([Path(build) / "sf_gate", "--device", "cpu", "--threads", cpu_cfg["threads"], "--parity",
                            ",".join(trial), "--items", "1,5,7", "--out", Path(log).with_suffix(f".gate_{pc}.json")],
                           Path(log).with_suffix(".gate.log")).returncode == 0
-        before, after = throughput(adopted), throughput(trial)
+        before, after = compare(adopted, trial)
         gain = after / before - 1 if before and after else None
         adopt = bool(gate and gain is not None and gain >= min_gain)
         reason = ("gate failed" if not gate else "a throughput run failed" if gain is None else
@@ -139,26 +161,33 @@ def select_path(gpu_cfgs, log, *, build, sample=True):
 
 
 def drain(task, config, log, workdir, *, build):
-    """Drain margin: 1.5 x the largest (exit - stop) over 20 deadline runs (10 at B = 10 s, 10 at 300 s, stream
-    purpose calibration), rounded up to 10 ms."""
+    """Drain margin: 1.5 x the largest (exit - cutoff) over 20 deadline runs with drain 0 (10 at B = 10 s, 10 at
+    300 s, stream purpose calibration), rounded up to 10 ms. The cutoff is the time from which no new trial or
+    microbatch is issued (deadline - drain), so the work in flight at the cutoff, aggregation, intervals and output are
+    all inside the measured gap. The runs are cold processes with the frozen configuration (warm-up, submission,
+    microbatch, host threads), like the H4 runs."""
     worst, runs = 0.0, []
+    workdir = new_attempt_dir(workdir)
     for B in (10, 300):
         for k in range(10):
             out = Path(workdir) / f"drain_B{B}_{k}"
             rec = harness.run_cold(task, out, config, {"kind": "drain", "budget_s": B, "rep": k}, build=build,
-                                   budget_s=B, drain_ms=0, replicate=k + 1, drop=False)
+                                   budget_s=B, drain_ms=0, replicate=k + 1, timeout_s=2 * B + 120)
+            pre = None
             try:
-                stop_ns = json.loads((out / "prefix.json").read_text())["stop_ns"]
-                gap = (rec["t1_ns"] - stop_ns) / 1e6
+                pre = json.loads((out / "prefix.json").read_text())
+                gap = (rec["t1_ns"] - pre["cutoff_ns"]) / 1e6
+                inflight = (pre["loop_end_ns"] - pre["cutoff_ns"]) / 1e6
             except (OSError, ValueError, KeyError):
-                gap = None
-            runs.append({"B": B, "rep": k, "exit_minus_stop_ms": gap, "status": rec["status"]})
+                gap = inflight = None
+            runs.append({"B": B, "rep": k, "exit_minus_cutoff_ms": gap, "loop_end_minus_cutoff_ms": inflight,
+                         "status": rec["status"], "completed_unused": (pre or {}).get("completed_unused")})
             append_jsonl(log, {"kind": "drain", **runs[-1], "run": rec})
             if gap is not None:
                 worst = max(worst, gap)
-    complete = all(r["exit_minus_stop_ms"] is not None for r in runs)
-    return {"device": config["device"], "max_exit_minus_stop_ms": worst, "complete": complete,
-            "drain_ms": math.ceil(1.5 * worst / 10) * 10 if complete else None, "runs": runs}
+    complete = all(r["exit_minus_cutoff_ms"] is not None for r in runs)
+    return {"device": config["device"], "config_key": harness.config_key(config), "max_exit_minus_cutoff_ms": worst,
+            "complete": complete, "drain_ms": math.ceil(1.5 * worst / 10) * 10 if complete else None, "runs": runs}
 
 
 PERF_EVENTS = ["cycles", "instructions", "LLC-loads", "LLC-load-misses", "stalled-cycles-frontend",
@@ -168,7 +197,8 @@ PERF_EVENTS = ["cycles", "instructions", "LLC-loads", "LLC-load-misses", "stalle
 def profile(config, log, *, build):
     """Exploratory hardware counters (never timed): canonical point and the three calibration lengths."""
     import subprocess
-    points = [point("tdiag/count_24_n604800")] + [calib_task("1s-week", "P24", L) for L in TC["short"]["lengths"]]
+    # the canonical point by its calibration file (never a held-out T-diag file)
+    points = [calib_task("1s-week", "P24", L) for L in TC["short"]["lengths"]]
     out = []
     for task in points:
         prefix, env = harness.launcher(config)

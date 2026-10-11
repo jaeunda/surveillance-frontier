@@ -26,9 +26,15 @@ def paired_interval(ratios, level=0.90):
 def category(lo, hi, censored_cpu=False, censored_gpu=False):
     """Category of a ratio interval, > 1 favouring the GPU (H3: T_cpu / T_gpu; H4: RMSE_cpu / RMSE_gpu).
 
-    A censored (timed-out) run is a lower bound on its own device's time, which can only flatter that device: an
-    advantage of the censored device, or equivalence, is not concluded; the other device's advantage stands.
+    Censoring (amendment 2026-10-11, before any measurement): a run stopped at its timeout enters the ratio at exactly
+    the timeout, but the paired-t interval computed from such substituted values is not a confidence bound for the
+    true ratio (the true value can move the mean and the SD in either direction: ratios [2, 2, 2] give [2, 2], while
+    a true third ratio of 200 gives [0.10, 821]). A condition with any censored run in the used pairs therefore gets
+    no category; the substituted interval is reported as description only.
     """
+    if censored_cpu or censored_gpu:
+        who = " and ".join(d for d, c in (("CPU", censored_cpu), ("GPU", censored_gpu)) if c)
+        return "censored", f"timed-out {who} runs: the substituted-timeout interval is descriptive, no verdict"
     if not (math.isfinite(lo) and math.isfinite(hi)):
         return "inconclusive", None
     if lo >= DELTA:
@@ -42,10 +48,6 @@ def category(lo, hi, censored_cpu=False, censored_gpu=False):
     note = None
     if cat == "inconclusive" and (lo > 1 or hi < 1):
         note = f"direction {'GPU' if lo > 1 else 'CPU'}, size unresolved"
-    if (cat == "GPU advantage" and censored_gpu) or (cat == "CPU advantage" and censored_cpu) or \
-            (cat == "equivalent" and (censored_cpu or censored_gpu)):
-        note = f"{cat} not concluded: censored {'GPU' if censored_gpu else 'CPU'} runs"
-        cat = "inconclusive"
     return cat, note
 
 

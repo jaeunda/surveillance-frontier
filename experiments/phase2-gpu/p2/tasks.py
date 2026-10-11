@@ -8,7 +8,9 @@ C++. Generation is deterministic; the files are committed under tasks/.
     pilot/     tref-cell_c<c>: one T-ref cell each (reference-build projection); T-ref-est on a 75,600-bar prefix
 """
 
+import hashlib
 import itertools
+import json
 from pathlib import Path
 
 from .common import PROTOCOL, ROOT, TASKS, sha256_file
@@ -34,6 +36,35 @@ def point(name):
 def is_heldout(task_json):
     td = task_json.get("tdiag")
     return bool(td) and td["n"] in TD["heldout_n"]
+
+
+def workload_fingerprint(task_json):
+    """What determines the cost of a steady-state point, independent of file name, purpose and stream: the series (and
+    prefix), the policies, the cells, and the maximum length."""
+    t = task_json
+    key = {"series": [t["series"]["name"], t["series"]["bars"]], "policies": t["policies"],
+           "cells": [[c["L"], c["q"], c["kind"]] for c in t["cells"]], "max_length": t["max_length"]}
+    return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+
+
+def heldout_split(files=None):
+    """The 13 held-out T-diag points split into 'unseen' (no exposed task runs the same workload) and 'seen' (the same
+    workload as a calibration, parity, or T-ref cell point that the pilot or the pre-freeze calibration runs)."""
+    files = files or generate()
+    exposed = {}
+    for name, t in files.items():
+        if name.startswith("main/") or is_heldout(t):
+            continue
+        exposed.setdefault(workload_fingerprint(t), []).append(name)
+    out = {"unseen": [], "seen": {}}
+    for name, t in sorted(files.items()):
+        if is_heldout(t):
+            same = exposed.get(workload_fingerprint(t))
+            if same:
+                out["seen"][Path(name).stem] = sorted(same)
+            else:
+                out["unseen"].append(Path(name).stem)
+    return out
 
 
 def series_entry(name, prefix=0):

@@ -1,7 +1,7 @@
 {
  "_about": "Parameters of the Phase 2 protocol (README.md). Part I (pilot) and Part II (scaling decision) feed Part III (formal comparison). Values marked 'set_at' are fixed later by the stated rule: pilot plans in pilot-plan.json, scaling choices in scaling-decision.json, formal values in protocol-freeze.json. Changes to this file need a dated revision entry in README.md before the affected measurement.",
  "revision": {
-  "current": "r2, 2026-10-10",
+  "current": "r2.1, 2026-10-11",
   "history": [
    {
     "rev": "r1",
@@ -13,6 +13,12 @@
     "rev": "r2",
     "date": "2026-10-10",
     "content": "restructured before any measurement: a pilot on available machines and a recorded scaling decision precede the formal comparison; formal machines come from that decision"
+   },
+   {
+    "rev": "r2.1",
+    "date": "2026-10-11",
+    "commit": null,
+    "content": "pre-measurement amendment after an independent preflight audit of r2 (fc2cd7a): a censored condition gets no verdict; D1 is judged on the held-out points whose workload is never run before D1 (6 of 13; 7 equal a calibration or T-ref cell workload and are reported apart); the drain margin is measured from the cutoff, so in-flight work is inside it; formal records are validated before any verdict (stage and attempt slots, pair order, distinct instances, gates, freeze and code fingerprints); GPU host threads are set per series and grid; the pilot gains a CPU parity step and per-session gates. Nothing had been measured."
    }
   ]
  },
@@ -402,6 +408,41 @@
    }
   ],
   "heldout_points": 13,
+  "heldout_judged": [
+   "count_1_n604800",
+   "kmax_8_n604800",
+   "q_0_n604800",
+   "sfloor_1.5_n604800",
+   "sfloor_2.0_n604800",
+   "sfloor_3.0_n604800"
+  ],
+  "heldout_seen": {
+   "L_128_n604800": [
+    "calib/1s-week_P24_L128.json",
+    "pilot/tref-cell_c10.json"
+   ],
+   "L_256_n604800": [
+    "calib/1s-week_P24_L256.json"
+   ],
+   "L_2_n604800": [
+    "calib/1s-week_P24_L2.json"
+   ],
+   "L_8_n604800": [
+    "calib/1s-week_P24_L8.json",
+    "pilot/tref-cell_c0.json"
+   ],
+   "count_24_n604800": [
+    "calib/1s-week_P24_L32.json",
+    "pilot/tref-cell_c5.json"
+   ],
+   "kmax_15_n604800": [
+    "calib/1s-week_P1_L32.json"
+   ],
+   "q_256_n604800": [
+    "pilot/tref-cell_c9.json"
+   ]
+  },
+  "_heldout_amendment": "r2.1: the D1 verdict uses heldout_judged only (no task that runs before D1 has the same workload). heldout_seen points have the workload of a calibration, parity or T-ref cell point run by the pilot or the pre-freeze calibration; their prediction errors are reported apart as repeat predictions, never as unseen conditions",
   "gpu_batch": [
    64,
    256,
@@ -545,6 +586,7 @@
   "steps": {
    "cpu-baseline": "T1/T2 on both series, cold and warm, CPU with every logical CPU",
    "threads": "CPU thread/affinity candidates from the machine's topology, short + sustained design",
+   "parity": "CPU parity rule (PC1..PC6, SPEC section 7) at the threads choice; the adopted set enters the CPU configuration of later steps. Before it, the CPU result is the starting configuration, not CPU-best",
    "rates": "steady-state rates per (series, grid, L) at the chosen CPU configuration and at each validated GPU configuration; inputs of the time projection",
    "gpu-rates": "G-inc and G-hyb at a small point and at the representative point, each at microbatch 64 and auto",
    "microbatch": "GPU microbatch sweep up to b_max, with memory records; allocation failures are results",
@@ -589,7 +631,9 @@
    "a prefix reference used in place of the full-week reference for H4",
    "held-out T-diag points run",
    "a slow or failed run discarded"
-  ]
+  ],
+  "time_box": "every run is bounded by the plan's remaining hours (hours_available minus the time already used by checks and steps, including steps cut off without a finish record); a run cut by it is recorded as 'time box'",
+  "sessions_are_machines": "each session runs its own P0 checks (CPU checks and device gates) and its own threads, parity and microbatch choices; sessions with different hardware fingerprints are never pooled"
  },
  "scaling": {
   "actions": {
@@ -616,7 +660,14 @@
    "c7i.8xlarge",
    "g6e.2xlarge",
    "g6e.4xlarge"
-  ]
+  ],
+  "metric_kinds": {
+   "e2e": "median end-to-end seconds of ok runs (lower is better)",
+   "rate": "median trials/s of ok benches (higher is better)",
+   "completion": "fraction of the planned runs of a condition that finished ok (higher is better); for an 'environment' action",
+   "spread": "max / min of the ok end-to-end times of a condition (lower is better, >= 1); for an 'environment' action"
+  },
+  "verification_before_formal": "every action other than 'none' has its P4 verification record before any formal launch"
  },
  "formal": {
   "machines_from": "results/scaling/scaling-decision.json (formal.cpu, formal.gpu, formal.cpu_size_control)",
@@ -685,7 +736,10 @@
    "r2_tolerance": 0.15,
    "parity_min_gain": 0.02,
    "optimisation_go_ratio": 1.5,
-   "_optimisation_go_ratio": "decides only how much GPU optimisation effort goes in before the freeze; never a criterion for scaling"
+   "_optimisation_go_ratio": "decides only how much GPU optimisation effort goes in before the freeze; never a criterion for scaling",
+   "censoring": "r2.1: a condition with a censored (timed-out) run in the used pairs gets no category; the interval from timeout-substituted values is reported as description only",
+   "pair_order": "odd pairs start with the CPU launch, even pairs with the GPU launch; both launches of a pair in one region on one UTC calendar day, on distinct instances",
+   "launch_validity": "a launch counts only if every planned run is present once, every fixed-n and T-ref run is ok or censored, cache-cold when cold, and reproduces the reference; otherwise the whole launch is excluded and replaced by a new attempt"
   },
   "thread_calibration": {
    "candidates_cpu_host": "physical cores, all vCPUs",
@@ -738,8 +792,9 @@
    ]
   },
   "deadline": {
-   "drain_margin_rule": "1.5 x max(exit - stop) over 20 calibration runs (10 at 10 s, 10 at 300 s), rounded up to 10 ms",
-   "late_run": "all cells N=0"
+   "drain_margin_rule": "1.5 x max(exit - cutoff) over 20 calibration runs with drain 0 (cutoff = deadline - drain: from then no new trial or microbatch is issued; work in flight, aggregation, intervals and output are inside the margin), rounded up to 10 ms; measured with the frozen configuration (threads, warm-up, submission, microbatch)",
+   "late_run": "all cells N=0",
+   "run_timeout": "2 x B + 120 s; a deadline run stopped by it counts as late"
   },
   "spot_verify_trials": 256,
   "launch_order_seed": "20261010 + launch index",

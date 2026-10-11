@@ -2,8 +2,9 @@
 condition list of a launch."""
 
 import sys
+from pathlib import Path
 
-from .common import FORMAL, MACHINES, PROTOCOL, RESULTS, committed_unchanged, read_json
+from .common import FORMAL, MACHINES, PROTOCOL, RESULTS, committed_unchanged, read_json, sha256_file
 from .tasks import main_task
 
 DECISION = RESULTS / "scaling" / "scaling-decision.json"
@@ -27,6 +28,16 @@ def decision(require_commit=True):
     if rec["formal"]["proceed"] is not True:
         raise SystemExit("the scaling decision does not proceed to the formal comparison "
                          "(formal H3/H4 are 'not measured (no scaling)')")
+    for i, act in enumerate(rec["actions"]):  # P4 before Part III: every scaling action has its verification record
+        if act["action"] == "none":
+            continue
+        found = [v for v in DECISION.parent.glob(f"verification_*_action{i}.json")
+                 if read_json(v).get("record_sha256") == sha256_file(DECISION)]
+        if not found:
+            raise SystemExit(f"action {i} ({act['action']} on {act['target']}) has no P4 verification of this record "
+                             "(scaling.py verify); the formal comparison follows P4")
+        if require_commit and not all(committed_unchanged(v) for v in found):
+            raise SystemExit("commit the P4 verification records before any formal launch")
     return rec
 
 
@@ -49,8 +60,28 @@ def formal_dir(label):
     return RESULTS / "formal" / label
 
 
-def launch_dir(label, role, i):
-    return formal_dir(label) / (f"launch-{i}-{role}" if role != "size-control" else "size-control")
+def slot_dir(label, stage, role, i=None):
+    """Directory of one launch slot; its attempts are attempt-1, attempt-2, ... (never reused, never overwritten).
+
+        stage-a/launch-<i>/                 Stage A CPU launch i (1, 2)
+        stage-d/pair-<i>/<cpu|gpu>/         Stage D launch pair i
+        stage-d/size-control/               the CPU size control (X2)
+    """
+    fd = formal_dir(label)
+    if stage == "A":
+        return fd / "stage-a" / f"launch-{i}"
+    if role == "size-control":
+        return fd / "stage-d" / "size-control"
+    return fd / "stage-d" / f"pair-{i}" / role
+
+
+def attempts(slot):
+    return sorted((p for p in Path(slot).glob("attempt-*") if p.is_dir()), key=lambda p: int(p.name.split("-")[1]))
+
+
+def first_role(pair):
+    """Pre-registered alternation of Stage D: odd pairs start with the CPU launch, even pairs with the GPU launch."""
+    return "cpu" if pair % 2 == 1 else "gpu"
 
 
 def conditions(role, stage, pair):

@@ -3,6 +3,9 @@
     python experiments/phase2-gpu/collect_env.py --profile lab-desktop [--out env.json]
     python experiments/phase2-gpu/collect_env.py --price c7i.16xlarge [--out price.json]   official on-demand price
     python experiments/phase2-gpu/collect_env.py --ec2-times INSTANCE_ID --out .../ec2.json  after termination
+
+Every paid instance gets one ec2*.json (with the official on-demand price) next to its results: launch attempts,
+calibration, reference, D0, and P4 verification sessions. p2/cost.py and analyze.py spend sum exactly these files.
 """
 
 import argparse

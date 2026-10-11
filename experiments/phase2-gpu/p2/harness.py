@@ -11,8 +11,15 @@ acknowledgement (sent after the output fsync) arrives. Everything else happens o
   deadline  t0 + B is passed to sf_run as an absolute deadline; a run is late if it exits after it
   sampler   1 Hz on the harness side: MemAvailable, swap, major faults, CPU steal, per-core MHz, and on GPU machines
             nvidia-smi clocks, memory and power
+
+Records: before a run starts, a 'started' line (run id, kind, condition) goes to the attempt log (ATTEMPT_LOG, set
+by the caller); the terminal record carries the same run id. A run that never got a terminal record (lost connection,
+OOM kill, spot interruption) is therefore visible as started-but-unfinished. Every run is bounded: by its timeout, by
+the caller's time box (TIME_BOX_NS, CLOCK_MONOTONIC), or both; warm requests, priming and benches included. A failure
+of the harness itself becomes a record with status 'harness_error', never a lost run.
 """
 
+import datetime as dt
 import json
 import os
 import signal
@@ -25,10 +32,40 @@ import time
 import uuid
 from pathlib import Path
 
-from .common import ROOT, append_jsonl
+from .common import ROOT, append_jsonl, fresh_dir
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 OMP_ENV = {"OMP_PLACES": "cores", "OMP_PROC_BIND": "spread"}
+ATTEMPT_LOG = None  # path of the 'started' records; set by the pilot session or the launch
+TIME_BOX_NS = None  # CLOCK_MONOTONIC ns after which no run starts and every running one is stopped
+BENCH_SETUP_ALLOWANCE_S = 900  # a bench is killed after its seconds plus this setup allowance
+WARM_CONTROL_TIMEOUT_S = 120  # quit request of a warm server
+
+
+class TimeBox(Exception):
+    """The caller's time box is used up: no further run starts."""
+
+
+def time_left_s():
+    return None if TIME_BOX_NS is None else (TIME_BOX_NS - time.monotonic_ns()) / 1e9
+
+
+def bounded(timeout_s):
+    """(effective timeout, whether it is the time box) for a run that may start now; raises TimeBox if none is left."""
+    left = time_left_s()
+    if left is not None and left <= 0:
+        raise TimeBox("time box used up")
+    if left is not None and (timeout_s is None or left < timeout_s):
+        return left, True
+    return timeout_s, False
+
+
+def started(kind, condition, config):
+    run_id = uuid.uuid4().hex
+    if ATTEMPT_LOG:
+        append_jsonl(ATTEMPT_LOG, {"event": "started", "run_id": run_id, "time": dt.datetime.now(dt.timezone.utc)
+                                   .isoformat(), "kind": kind, "condition": condition, "config_key": config_key(config)})
+    return run_id
 
 
 # ---- back-end configurations ----
@@ -38,17 +75,22 @@ def cpu_config(threads, cpus=None, parity="none", warmup=0, name=None):
             "warmup_trials": int(warmup), "name": name}
 
 
-def gpu_config(path, microbatch, host_threads, submission=1, warmup=0, device="cuda"):
+def gpu_config(path, microbatch, host_threads, submission=1, warmup=0, device="cuda", cpus=None):
+    if isinstance(host_threads, dict) or isinstance(host_threads, bool):
+        raise TypeError(f"host_threads must be one thread count, not {host_threads!r}")
     return {"device": device, "path": path, "microbatch": microbatch, "submission": int(submission),
-            "threads": int(host_threads), "warmup_trials": int(warmup)}
+            "threads": int(host_threads), "warmup_trials": int(warmup), "cpus": cpus}
 
 
 def config_key(c):
-    """A stable short name of a configuration, e.g. cpu:t6@0-5:none or cuda:inc:b256."""
+    """A stable short name of everything that can change a timing, e.g. cpu:t6@0-5:none or cuda:inc:b256:h8:s1:w0.
+    Two runs with the same key ran the same configuration."""
+    pin = f"@{c['cpus']}" if c.get("cpus") else ""
     if c["device"] == "cpu":
-        pin = f"@{c['cpus']}" if c.get("cpus") else ""
-        return f"cpu:t{c['threads']}{pin}:{c.get('parity') or 'none'}"
-    return f"{c['device']}:{c['path']}:b{c['microbatch']}"
+        w = f":w{c['warmup_trials']}" if c.get("warmup_trials") else ""
+        return f"cpu:t{c['threads']}{pin}:{c.get('parity') or 'none'}{w}"
+    return (f"{c['device']}:{c['path']}:b{c['microbatch']}:h{c['threads']}{pin}:s{c.get('submission', 1)}"
+            f":w{c.get('warmup_trials', 0)}")
 
 
 def sf_args(c):
@@ -91,12 +133,17 @@ def parse_device_info(text):
 # ---- system probes ----
 
 def drop_caches():
+    """'cache-cold' only if the write to drop_caches actually succeeded (as root or through sudo -n)."""
     os.sync()
     try:
         Path("/proc/sys/vm/drop_caches").write_text("3\n")
         return "cache-cold"
     except OSError:
-        r = subprocess.run(["sudo", "-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"], capture_output=True)
+        try:
+            r = subprocess.run(["sudo", "-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"],
+                               capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return "process-cold"
         return "cache-cold" if r.returncode == 0 else "process-cold"
 
 
@@ -178,7 +225,7 @@ class Sampler:
     def __init__(self, gpu=False):
         self.gpu = gpu
         self.stop_flag = threading.Event()
-        self.mem, self.mhz, self.smi_lines = [], [], []
+        self.mem, self.mhz, self.smi_lines, self.per_core = [], [], [], []
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.smi = None
 
@@ -188,6 +235,7 @@ class Sampler:
             mhz = _core_mhz()
             if mhz:
                 self.mhz.append(statistics.median(mhz))
+                self.per_core.append(mhz)
             self.stop_flag.wait(1.0)
 
     def __enter__(self):
@@ -218,6 +266,8 @@ class Sampler:
                "pswpout": self.vm1.get("pswpout", 0) - self.vm0.get("pswpout", 0),
                "major_faults_system": self.vm1.get("pgmajfault", 0) - self.vm0.get("pgmajfault", 0),
                "steal_jiffies": self.steal1 - self.steal0, "core_mhz_median": _summary(self.mhz),
+               "core_mhz_per_core": [_summary([s[i] for s in self.per_core if i < len(s)])
+                                     for i in range(max((len(s) for s in self.per_core), default=0))],
                "samples": len(self.mem)}
         if self.gpu:
             rows = [line.strip().split(", ") for line in self.smi_lines if line.count(",") >= 5]
@@ -259,9 +309,10 @@ def _runner_record(st):
     return rec
 
 
-def _record(mode, condition, config, cmd, t0, t1, status, out_dir, extra, sampler, cg_peak, expected_sha):
+def _record(mode, condition, config, cmd, t0, t1, status, out_dir, extra, sampler, cg_peak, expected_sha, run_id=None):
     st = _stages(out_dir)
-    rec = {"mode": mode, **condition, "config": config, "config_key": config_key(config), "cmd": cmd,
+    rec = {"mode": mode, **condition, "run_id": run_id, "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+           "config": config, "config_key": config_key(config), "cmd": cmd,
            "t0_ns": t0, "t1_ns": t1, "e2e_s": (t1 - t0) / 1e9, "status": status, "out": str(out_dir),
            "result_sha256": st["result_sha256"] if st else None, "runner": _runner_record(st),
            "cgroup_memory_peak_bytes": cg_peak, **sampler.record(), **extra}
@@ -274,43 +325,54 @@ def _record(mode, condition, config, cmd, t0, t1, status, out_dir, extra, sample
 
 def run_cold(task, out_dir, config, condition=None, *, build, timeout_s=None, expected_sha=None, budget_s=None,
              drain_ms=0, replicate=None, drop=True):
-    """One cold run (deadline run with budget_s). Returns the run record; never raises for a failed run."""
-    out_dir, task = Path(out_dir).resolve(), Path(task).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cold = drop_caches() if drop else "process-cold"
-    cg = Cgroup()
-    prefix, env = launcher(config)
-    base = [*prefix, str(Path(build) / "sf_run"), str(task), "--out", str(out_dir), *sf_args(config)]
-    if replicate is not None:
-        base += ["--replicate", str(replicate)]
-    gpu = config["device"] == "cuda"
-    with Sampler(gpu=gpu) as smp:
-        t0 = time.monotonic_ns()
-        deadline = t0 + int(budget_s * 1e9) if budget_s is not None else None
-        cmd = base + (["--deadline-ns", str(deadline), "--drain-ms", str(drain_ms)] if deadline else [])
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT, env=env,
-                                preexec_fn=cg.preexec())
-        try:
-            _, err = proc.communicate(timeout=timeout_s)
-            t1 = time.monotonic_ns()
-            status = "ok" if proc.returncode == 0 else ("width_fail" if proc.returncode == 3 else "error")
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            _, err = proc.communicate()
-            t1 = t0 + int(timeout_s * 1e9)  # censored at exactly the timeout
-            status = "timeout"
-    if deadline is not None and status == "ok" and t1 > deadline:
-        status = "late"
-    rec = _record("deadline" if deadline else "cold", condition or {}, config, cmd, t0, t1, status, out_dir,
-                  {"cold_kind": cold, "returncode": proc.returncode, "stderr_tail": err[-2000:],
-                   "deadline_ns": deadline, "budget_s": budget_s, "drain_ms": drain_ms if deadline else None,
-                   "replicate": replicate}, smp, cg.peak_bytes(), expected_sha)
-    cg.remove()
-    return rec
+    """One cold run (deadline run with budget_s). Returns the run record; never raises for a failed run (TimeBox is
+    raised before the start if the caller's time box is used up)."""
+    condition = condition or {}
+    kind = "deadline" if budget_s is not None else "cold"
+    eff_timeout, boxed = bounded(timeout_s)
+    run_id = started(kind, condition, config)
+    try:
+        out_dir, task = Path(out_dir).resolve(), Path(task).resolve()
+        fresh_dir(out_dir)
+        cold = drop_caches() if drop else "process-cold"
+        cg = Cgroup()
+        prefix, env = launcher(config)
+        base = [*prefix, str(Path(build) / "sf_run"), str(task), "--out", str(out_dir), *sf_args(config)]
+        if replicate is not None:
+            base += ["--replicate", str(replicate)]
+        gpu = config["device"] == "cuda"
+        with Sampler(gpu=gpu) as smp:
+            t0 = time.monotonic_ns()
+            deadline = t0 + int(budget_s * 1e9) if budget_s is not None else None
+            cmd = base + (["--deadline-ns", str(deadline), "--drain-ms", str(drain_ms)] if deadline else [])
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT, env=env,
+                                    preexec_fn=cg.preexec())
+            try:
+                _, err = proc.communicate(timeout=eff_timeout)
+                t1 = time.monotonic_ns()
+                status = "ok" if proc.returncode == 0 else ("width_fail" if proc.returncode == 3 else "error")
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                _, err = proc.communicate()
+                t1 = t0 + int(eff_timeout * 1e9)  # censored at exactly the timeout
+                status = "time box" if boxed else "timeout"
+        if deadline is not None and status == "ok" and t1 > deadline:
+            status = "late"
+        rec = _record(kind, condition, config, cmd, t0, t1, status, out_dir,
+                      {"cold_kind": cold, "returncode": proc.returncode, "stderr_tail": err[-2000:],
+                       "deadline_ns": deadline, "budget_s": budget_s, "drain_ms": drain_ms if deadline else None,
+                       "replicate": replicate, "timeout_s": eff_timeout}, smp, cg.peak_bytes(), expected_sha, run_id)
+        cg.remove()
+        return rec
+    except Exception as e:  # noqa: BLE001  (a harness failure is a recorded result, not a lost run)
+        return {"mode": kind, **condition, "run_id": run_id, "config": config, "config_key": config_key(config),
+                "status": "harness_error", "error": repr(e), "out": str(out_dir), "budget_s": budget_s,
+                "replicate": replicate, "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()}
 
 
 class WarmServer:
-    """sf_run --serve in its own cgroup; each timed request is one warm run."""
+    """sf_run --serve in its own cgroup and process group; each timed request is one warm run. Every request has a
+    timeout; a request that exceeds it kills the server (the run is recorded as timed out, the block ends)."""
 
     def __init__(self, config, *, build):
         self.config = config
@@ -322,71 +384,149 @@ class WarmServer:
                                      preexec_fn=self.cg.preexec())
         line = self.proc.stdout.readline()
         if "serving" not in line:
+            self.kill()
             raise RuntimeError(f"warm server did not start: {line} {self.proc.stderr.read()[-2000:]}")
 
-    def request(self, payload):
+    def kill(self):
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        self.proc.wait()
+
+    def request(self, payload, timeout_s=None):
+        """The server's JSON reply; socket.timeout (an OSError) if none arrives within timeout_s."""
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(self.sock)
-        s.sendall((json.dumps(payload) + "\n").encode())
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        s.close()
+        s.settimeout(timeout_s)
+        try:
+            s.connect(self.sock)
+            s.sendall((json.dumps(payload) + "\n").encode())
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            s.close()
         return json.loads(buf.decode())
 
-    def prime(self, task, out_dir):
+    def prime(self, task, out_dir, timeout_s=None):
         """A first task outside the timing; its base-state key matches the timed task."""
-        r = self.request({"task": str(Path(task).resolve()), "out": str(Path(out_dir).resolve())})
+        eff, _ = bounded(timeout_s)
+        try:
+            r = self.request({"task": str(Path(task).resolve()), "out": str(fresh_dir(Path(out_dir).resolve()))}, eff)
+        except socket.timeout:
+            self.kill()
+            raise RuntimeError(f"warm priming exceeded {eff} s; server stopped") from None
         if r.get("status") != "ok":
             raise RuntimeError(f"warm priming failed: {r}")
         return r
 
     def timed(self, task, out_dir, condition=None, expected_sha=None, timeout_s=None):
+        condition = condition or {}
+        eff, boxed = bounded(timeout_s)
+        run_id = started("warm", condition, self.config)
         out_dir, task = Path(out_dir).resolve(), Path(task).resolve()
-        out_dir.mkdir(parents=True, exist_ok=True)
+        fresh_dir(out_dir)
+        killed = False
         with Sampler(gpu=self.config["device"] == "cuda") as smp:
             t0 = time.monotonic_ns()
-            r = self.request({"task": str(task), "out": str(out_dir)})
-            t1 = time.monotonic_ns()
+            try:
+                r = self.request({"task": str(task), "out": str(out_dir)}, eff)
+                t1 = time.monotonic_ns()
+            except socket.timeout:
+                self.kill()
+                killed, r, t1 = True, {"status": "timeout"}, t0 + int(eff * 1e9)
+            except (OSError, ValueError) as e:
+                r, t1 = {"status": "error", "error": repr(e)}, time.monotonic_ns()
         status = r.get("status", "error")
-        if timeout_s is not None and (t1 - t0) / 1e9 > timeout_s:
-            status, t1 = "timeout", t0 + int(timeout_s * 1e9)
+        if killed:
+            status = "time box" if boxed else "timeout"
+        elif status == "ok" and eff is not None and (t1 - t0) / 1e9 > eff:
+            status, t1 = ("time box" if boxed else "timeout"), t0 + int(eff * 1e9)
         if status == "ok" and not r.get("base_cached"):
             status = "not_warm"  # the server rebuilt the base state: not a warm run
-        return _record("warm", condition or {}, self.config, ["warm", str(task)], t0, t1, status, out_dir,
-                       {"base_cached": r.get("base_cached"), "reply": r}, smp, self.cg.peak_bytes(), expected_sha)
+        return _record("warm", condition, self.config, ["warm", str(task)], t0, t1, status, out_dir,
+                       {"base_cached": r.get("base_cached"), "reply": r, "timeout_s": eff,
+                        "cgroup_scope": "server lifetime (priming and earlier requests included)"},
+                       smp, self.cg.peak_bytes(), expected_sha, run_id)
+
+    @property
+    def alive(self):
+        return self.proc.poll() is None
 
     def close(self):
-        try:
-            self.request({"cmd": "quit"})
-            self.proc.wait(timeout=60)
-        except (OSError, subprocess.TimeoutExpired, ValueError):
-            self.proc.kill()
+        if self.alive:
+            try:
+                self.request({"cmd": "quit"}, WARM_CONTROL_TIMEOUT_S)
+                self.proc.wait(timeout=WARM_CONTROL_TIMEOUT_S)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                self.kill()
         self.cg.remove()
+
+
+def warm_block(config, task, out, reps, condition, *, build, expected_sha=None, timeout_s=None, prime_timeout_s=None,
+               on_record):
+    """One warm block: priming outside the timing, then reps timed requests. on_record(rec) is called for each record
+    as soon as it exists (so a block cut off later keeps its earlier runs). A failure to start or prime is one record
+    with status 'error'; a request that times out ends the block (the server is gone)."""
+    try:
+        srv = WarmServer(config, build=build)
+    except (RuntimeError, OSError) as e:
+        on_record({"mode": "warm", **condition, "config": config, "config_key": config_key(config), "status": "error",
+                   "error": repr(e)})
+        return
+    try:
+        try:
+            srv.prime(task, Path(f"{out}_prime"), prime_timeout_s)
+        except (RuntimeError, OSError, ValueError) as e:
+            on_record({"mode": "warm", **condition, "config": config, "config_key": config_key(config),
+                       "status": "error", "error": f"priming: {e!r}"})
+            return
+        for r in range(reps):
+            rec = srv.timed(task, Path(f"{out}_w{r}"), {**condition, "rep": r}, expected_sha=expected_sha,
+                            timeout_s=timeout_s)
+            on_record(rec)
+            if not srv.alive:
+                return
+    finally:
+        srv.close()
 
 
 def bench(task, config, seconds, *, build, sample=False, diag=False):
     """Steady-state throughput of one task point (sf_run --bench). Returns the bench record or, on failure, a record
-    with status 'error' and the tail of stderr (an allocation failure is a result, not an exception)."""
+    with status 'error' and the tail of stderr (an allocation failure is a result, not an exception). A bench is killed
+    after seconds + BENCH_SETUP_ALLOWANCE_S, or at the time box."""
+    eff, boxed = bounded(seconds + BENCH_SETUP_ALLOWANCE_S)
+    run_id = started("bench", {"task": str(task)}, config)
     prefix, env = launcher(config)
     cmd = [*prefix, str(Path(build) / "sf_run"), str(task), "--bench", str(seconds), *sf_args(config)]
     if diag:
         cmd.append("--diag")
+    timed_out = False
     with Sampler(gpu=sample and config["device"] == "cuda") as smp:
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, env=env)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT, env=env,
+                                start_new_session=True)
+        try:
+            out, err = proc.communicate(timeout=eff)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, err = proc.communicate()
+            timed_out = True
     rec = {"task": str(Path(task).relative_to(ROOT)) if Path(task).is_absolute() else str(task), "config": config,
-           "config_key": config_key(config), "seconds": seconds, "returncode": r.returncode, "sampler": smp.record()}
-    if r.returncode == 0:
-        b = json.loads(r.stdout.strip().splitlines()[-1])
+           "config_key": config_key(config), "seconds": seconds, "returncode": proc.returncode, "sampler": smp.record(),
+           "run_id": run_id, "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if timed_out:
+        rec.update({"status": "time box" if boxed else "timeout", "timeout_s": eff, "trials_per_s": None,
+                    "stderr_tail": err[-2000:]})
+    elif proc.returncode == 0:
+        b = json.loads(out.strip().splitlines()[-1])
         rec.update({"status": "ok", "trials_per_s": b["trials_per_s"], "setup_s": b["setup_s"], "bench": b,
                     "device": parse_device_info(b.get("device_info"))})
     else:
-        err = r.stderr[-2000:]
-        oom = any(s in err for s in ("out of memory", "cudaMalloc", "no microbatch fits", "allocation failed"))
-        rec.update({"status": "allocation_failure" if oom else "error", "stderr_tail": err, "trials_per_s": None})
+        oom = any(x in err for x in ("out of memory", "cudaMalloc", "no microbatch fits", "allocation failed"))
+        rec.update({"status": "allocation_failure" if oom else "error", "stderr_tail": err[-2000:], "trials_per_s": None})
     return rec
 
 

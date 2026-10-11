@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -326,12 +327,21 @@ Result run_task(Prepared& p, const Task& t, const Options& o, Stamps& st) {
 
   // S5: trial loop (warm-up trials included)
   warmup(p, t, o.warmup);
+  // cutoff: from this time no new trial (CPU) or microbatch (GPU) is issued; trials already in flight finish. The
+  // drain margin covers cutoff -> exit, including that in-flight remainder (stop_seen_ns: first check past the cutoff)
   const int64_t stop_at = deadline ? o.deadline_ns - o.drain_ms * 1000000LL : INT64_MAX;
-  const auto stop = [stop_at] { return mono_ns() >= stop_at; };
+  std::atomic<int64_t> stop_seen{0};
+  const auto stop = [stop_at, &stop_seen] {
+    const int64_t now = mono_ns();
+    if (now < stop_at) return false;
+    int64_t none = 0;
+    stop_seen.compare_exchange_strong(none, now);
+    return true;
+  };
   std::vector<uint64_t> hit, ovl;
   std::vector<uint8_t> done;
   BackendStats stats;
-  int64_t G = 0, completed = 0, stop_ns = 0;
+  int64_t G = 0, completed = 0, loop_end_ns = 0;
   if (!deadline) {
     const int64_t total = sp.total;
     hit.assign(total * words, 0);
@@ -360,7 +370,7 @@ Result run_task(Prepared& p, const Task& t, const Options& o, Stamps& st) {
       for (int64_t g = g0; g < g1; ++g) full &= done[g] != 0;
       if (!full) break;
     }
-    stop_ns = mono_ns();
+    loop_end_ns = mono_ns();
     while (G < static_cast<int64_t>(done.size()) && done[G]) ++G;  // contiguous prefix
     for (uint8_t d : done) completed += d;
   }
@@ -444,7 +454,9 @@ Result run_task(Prepared& p, const Task& t, const Options& o, Stamps& st) {
       }
     files["cells.csv"] = write_file(o.out + "/cells.csv", csv);
     files["hits.bin"] = write_file(o.out + "/hits.bin", pack_bits(hit, words, G, P));
-    res.result_sha = files["cells.csv"];
+    // identity of a fixed-n result: the counts and every per-trial bit (a swap of two trials' bits keeps k)
+    const std::string both = "cells.csv " + files["cells.csv"] + "\nhits.bin " + files["hits.bin"] + "\n";
+    res.result_sha = sha256_hex(both.data(), both.size());
   } else if (sp.order == TrialOrder::Enumerate) {
     std::string csv = "cell,L,q,kind,policy,K,s_min,episode_gap,starts,k,overlap_k,rate\n";
     for (int c = 0; c < C; ++c)
@@ -457,7 +469,8 @@ Result run_task(Prepared& p, const Task& t, const Options& o, Stamps& st) {
   } else {
     std::ostringstream j;
     j << "{\"G\":" << G << ",\"completed\":" << completed << ",\"completed_unused\":" << completed - G
-      << ",\"replicate\":" << replicate << ",\"stop_ns\":" << stop_ns << ",\"deadline_ns\":" << o.deadline_ns
+      << ",\"replicate\":" << replicate << ",\"cutoff_ns\":" << stop_at << ",\"stop_seen_ns\":" << stop_seen.load()
+      << ",\"loop_end_ns\":" << loop_end_ns << ",\"deadline_ns\":" << o.deadline_ns
       << ",\"drain_ms\":" << o.drain_ms << ",\"checkpoint\":" << n_star << ",\"cells\":[";
     for (int c = 0; c < C; ++c) {
       j << (c ? "," : "") << "{\"cell\":" << c << ",\"L\":" << t.cells[c].length << ",\"q\":" << num(t.cells[c].strength)
@@ -643,6 +656,7 @@ int serve(const Options& base_opt) {
     fail("cannot listen on " + base_opt.serve);
   device_init(base_opt.device, base_opt.cfg);
   std::map<std::string, std::unique_ptr<Prepared>> cache;  // by base-state key; at most one entry
+  std::map<std::string, std::pair<std::string, std::string>> input_sha;  // path -> (file identity, SHA-256)
   std::fprintf(stdout, "{\"serving\":%s}\n", json_quote(base_opt.serve).c_str());
   std::fflush(stdout);
   for (;;) {
@@ -670,7 +684,16 @@ int serve(const Options& base_opt) {
         o.warmup = req.int_or("warmup_trials", base_opt.warmup);
         o.replicate = req.int_or("replicate", -1);
         const Task t = load_task(o.task);
-        std::string sha = sha256_file(t.series_path);
+        // S1 is not part of a warm run (SPEC §8): the input is hashed once per file identity (device, inode, size,
+        // mtime) and re-hashed only if that identity changes
+        struct stat fs {};
+        if (stat(t.series_path.c_str(), &fs) != 0) throw std::runtime_error("cannot stat " + t.series_path);
+        const std::string ident = std::to_string(fs.st_dev) + ":" + std::to_string(fs.st_ino) + ":" +
+                                  std::to_string(fs.st_size) + ":" + std::to_string(fs.st_mtim.tv_sec) + "." +
+                                  std::to_string(fs.st_mtim.tv_nsec);
+        auto& known = input_sha[t.series_path];
+        if (known.first != ident) known = {ident, sha256_file(t.series_path)};
+        const std::string sha = known.second;
         if (!t.series_sha256.empty() && sha != t.series_sha256) throw std::runtime_error("input SHA-256 mismatch");
         const std::string key = base_key(t, sha, o.device, o.cfg);
         // one prepared state at a time: another key's state would hold memory (and GPU memory sizes the batch)

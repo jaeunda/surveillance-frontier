@@ -7,12 +7,15 @@
 The draft fills in what the pilot measured (observations, the metric catalogue with values, projections); every
 judgement is left as "TODO" for a person to write: required outputs and schedule, alternatives tried without
 scaling, the actions with their hypotheses, expected effects, falsifying measurements, cost and stop conditions, and
-whether and on which machines the formal comparison proceeds. `check` refuses a record with any TODO, an action
-without a falsifiable metric, formal machines without an identity rule, or planned cost above the remaining cap.
-The record must be committed before any run it justifies (pilot.py plan --purpose verification, launch.py check this).
+whether and on which machines the formal comparison proceeds. `check` refuses a record with any TODO or empty
+judgement, a baseline that is not the pilot's recomputed value, unordered or non-positive predictions, an action
+without a falsifiable metric, formal machines without an identity rule, a formal plan without itemised costs, or planned
+cost above the remaining cap. The record must pass `check` and be committed before any run it justifies (pilot.py plan
+--purpose verification and every formal script check this); formal launches also need each action's P4 verification.
 """
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -53,7 +56,7 @@ def cmd_draft(a):
         "alternatives_without_scaling": [{"what": TODO, "range_checked": TODO, "result": TODO}],
         "actions": [{
             "action": TODO, "target": TODO, "constraint_observed": TODO, "hypothesis": TODO,
-            "metrics": [{"name": TODO, "kind": TODO, "baseline_label": TODO, "baseline": None,
+            "metrics": [{"name": TODO, "kind": TODO, "mode": TODO, "baseline_label": TODO, "baseline": None,
                          "predicted": {"conservative": None, "base": None, "optimistic": None},
                          "outside_observed_range": TODO, "threshold_gain": None}],
             "falsification": TODO,
@@ -62,7 +65,7 @@ def cmd_draft(a):
         }],
         "formal": {"proceed": TODO, "cpu": TODO, "gpu": TODO, "cpu_size_control": None, "reason": TODO},
         "budget": {"cap_usd": SCALING["budget_cap_usd"], "spent_usd": None, "planned_usd": None,
-                   "rule": SCALING["budget_rule"]},
+                   "formal_items": None, "rule": SCALING["budget_rule"]},
         "conditionality": "a comparison on machines chosen after seeing pilot results is conditional on those machines; "
                           "it is not a claim about the best CPU or GPU",
     }
@@ -81,8 +84,34 @@ def _todos(node, path=""):
         yield path
 
 
-def problems(rec):
+def _text(v):
+    return isinstance(v, str) and v.strip() and v != TODO
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def problems(rec, recompute=True):
+    """Everything that keeps a record from justifying paid runs. With recompute, every metric's baseline is recomputed
+    from the raw pilot records of its baseline label and must match."""
     out = [f"TODO at {p}" for p in _todos(rec)]
+    if not rec.get("pilot"):
+        out.append("no pilot observations (scaling.py draft --pilot LABEL)")
+    for p in rec.get("pilot") or []:
+        if not p.get("observations") or not p.get("metric_catalog"):
+            out.append(f"pilot {p.get('label')}: observations or metric catalogue missing")
+    sched = rec.get("outputs_and_schedule") or {}
+    for k in ("required_outputs", "schedule"):
+        if not _text(sched.get(k)):
+            out.append(f"outputs_and_schedule.{k} missing")
+    alts = rec.get("alternatives_without_scaling")
+    if not isinstance(alts, list) or not alts:
+        out.append("alternatives_without_scaling: at least one entry (what was tried within the machine)")
+    for i, x in enumerate(alts or []):
+        for k in ("what", "range_checked", "result"):
+            if not _text((x or {}).get(k)):
+                out.append(f"alternatives_without_scaling[{i}].{k} missing")
     actions = rec.get("actions") or []
     kinds = [x.get("action") for x in actions]
     if not actions:
@@ -96,22 +125,47 @@ def problems(rec):
             continue
         if act.get("target") not in MACHINES:
             out.append(f"actions[{i}]: target must be a machine profile ({', '.join(MACHINES)})")
+        for f in ("constraint_observed", "hypothesis", "falsification", "stop"):
+            if not _text(act.get(f)):
+                out.append(f"actions[{i}].{f} missing")
         if not act.get("metrics"):
             out.append(f"actions[{i}]: no metric to verify")
         for j, m in enumerate(act.get("metrics") or []):
             where = f"actions[{i}].metrics[{j}]"
-            if m.get("kind") not in ("e2e", "rate"):
-                out.append(f"{where}: kind must be e2e or rate")
-            if not isinstance(m.get("baseline"), (int, float)) or m["baseline"] <= 0:
+            if m.get("kind") not in SCALING["metric_kinds"]:
+                out.append(f"{where}: kind must be one of {list(SCALING['metric_kinds'])}")
+                continue
+            if m["kind"] in ("completion", "spread") and k != "environment":
+                out.append(f"{where}: {m['kind']} metrics verify an 'environment' action only")
+            if m["kind"] in ("e2e", "completion", "spread") and m.get("mode") not in ("cache-cold", "process-cold", "warm"):
+                out.append(f"{where}: mode must be cache-cold, process-cold or warm (the target re-runs the same kind)")
+            if not _num(m.get("baseline")) or m["baseline"] <= 0:
                 out.append(f"{where}: baseline value missing (take it from the metric catalogue)")
+            elif recompute:
+                if not m.get("baseline_label"):
+                    out.append(f"{where}: baseline_label missing")
+                else:
+                    try:
+                        val, _, n = records.observed(m["baseline_label"], m)
+                    except ValueError as e:
+                        val, n = None, 0
+                        out.append(f"{where}: {e}")
+                    if val is None or not math.isclose(val, m["baseline"], rel_tol=1e-9):
+                        out.append(f"{where}: baseline {m['baseline']} is not the pilot's value {val} (n = {n})")
             pred = m.get("predicted") or {}
-            if not all(isinstance(pred.get(s), (int, float)) for s in ("conservative", "base", "optimistic")):
-                out.append(f"{where}: predicted conservative/base/optimistic missing")
-            if not isinstance(m.get("threshold_gain"), (int, float)) or m["threshold_gain"] < 1:
+            if not all(_num(pred.get(s)) and pred[s] > 0 for s in ("conservative", "base", "optimistic")):
+                out.append(f"{where}: predicted conservative/base/optimistic missing or not positive")
+            elif _num(m.get("baseline")) and m["baseline"] > 0:
+                g = [records.gain(m, m["baseline"], pred[s]) for s in ("conservative", "base", "optimistic")]
+                if not g[0] <= g[1] <= g[2]:
+                    out.append(f"{where}: predicted gains must order conservative <= base <= optimistic ({g})")
+            if not _num(m.get("threshold_gain")) or m["threshold_gain"] < 1:
                 out.append(f"{where}: threshold_gain (>= 1) missing: the gain below which the hypothesis is withdrawn")
         c = act.get("cost") or {}
-        if not isinstance(c.get("usd_on_demand"), (int, float)):
+        if not _num(c.get("usd_on_demand")) or c["usd_on_demand"] < 0:
             out.append(f"actions[{i}]: cost.usd_on_demand missing")
+        if not _num(c.get("instance_hours")) or c["instance_hours"] <= 0:
+            out.append(f"actions[{i}]: cost.instance_hours missing")
     if "none" in kinds and len(kinds) > 1:
         out.append("action 'none' excludes other actions")
     f = rec.get("formal") or {}
@@ -124,22 +178,27 @@ def problems(rec):
                 out.append(f"formal.{role}: a machine profile with an identity rule is required for verdict launches")
         if f.get("cpu_size_control") and f["cpu_size_control"] not in MACHINES:
             out.append("formal.cpu_size_control: unknown profile")
+        if not _text(f.get("reason")):
+            out.append("formal.reason missing")
     if kinds == ["none"] and f.get("proceed") is True:
         out.append("no scaling but formal.proceed: name the action that moves to the formal machines")
     b = rec.get("budget") or {}
     planned = sum((act.get("cost") or {}).get("usd_on_demand") or 0 for act in actions)
-    if not isinstance(b.get("spent_usd"), (int, float)):
+    if not _num(b.get("spent_usd")):
         out.append("budget.spent_usd missing")
-    if not isinstance(b.get("planned_usd"), (int, float)):
+    if not _num(b.get("planned_usd")):
         out.append("budget.planned_usd missing (all paid work: verification, gates, calibration, launches, reserve)")
     elif b["planned_usd"] < planned:
         out.append(f"budget.planned_usd {b['planned_usd']} is below the actions' sum {planned:.2f}")
-    if isinstance(b.get("planned_usd"), (int, float)) and isinstance(b.get("spent_usd"), (int, float)):
+    if _num(b.get("planned_usd")) and _num(b.get("spent_usd")):
         if b["spent_usd"] + b["planned_usd"] > b.get("cap_usd", SCALING["budget_cap_usd"]):
             out.append(f"spent + planned = {b['spent_usd'] + b['planned_usd']:.2f} USD exceeds the cap "
                        f"{b.get('cap_usd')} (the cap is not raised automatically)")
     if b.get("cap_usd") != SCALING["budget_cap_usd"]:
         out.append("budget.cap_usd differs from protocol.json")
+    if f.get("proceed") is True and not isinstance(b.get("formal_items"), list):
+        out.append("budget.formal_items: the itemised formal plan (P0/gates, Stage A x 2, Stage B, calibration on both "
+                   "machines, D0, m pairs incl. CPU-host and T-ref, H4 at 2 x m x 10 x 440 s, retries, storage)")
     for p in rec.get("pilot") or []:
         s = RESULTS / "pilot" / p["label"] / "pilot-summary.json"
         if not s.exists() or sha256_file(s) != p["summary_sha256"]:
@@ -172,7 +231,10 @@ def cmd_verify(a):
         sys.exit(f"target label ran on {plan['machine']}, the action names {act['target']}")
     rows = []
     for m in act["metrics"]:
-        value, cfg, n = records.observed(a.target_label, m)
+        try:
+            value, cfg, n = records.observed(a.target_label, m)
+        except ValueError as e:
+            value, cfg, n = None, f"ambiguous: {e}", 0
         g = records.gain(m, m["baseline"], value)
         pg = {s: records.gain(m, m["baseline"], m["predicted"][s]) for s in ("conservative", "base", "optimistic")}
         if g is None:

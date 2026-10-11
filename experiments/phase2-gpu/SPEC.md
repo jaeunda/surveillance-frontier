@@ -40,8 +40,11 @@ T1/T2/T-ref/T-ref-est task files are generated from `protocol.json` and committe
 
 **2.1 Stages (contract).** The runner writes a `CLOCK_MONOTONIC` nanosecond timestamp at each boundary S0–S8
 ([protocol](README.md#measurement)). On the GPU, a stage boundary is taken after the work of that stage is complete
-on the device (stream synchronisation at boundaries only; never inside S5 in timed runs). Warm-up trials use stream
-purpose `warmup` (§3) and are inside the measured time on both devices; their number per device is set at the freeze.
+on the device. Inside S5 a timed run adds no synchronisation for timing: GPU stage timers exist only in diagnostic runs
+(`--diag`). The host does wait for each microbatch's results (bits, or candidates on G-hyb) before using them; in the
+current prototype these copies are synchronous, a performance gap recorded in `IMPLEMENTATION.md`, not a measurement
+boundary. Warm-up trials use stream purpose `warmup` (§3) and are inside the measured time on both devices; their
+number per device is set at the freeze.
 
 **2.2 Base-state key (contract).** The cache key of a prepared base state is (input SHA-256, window ladder, policy
 list, s<sub>floor</sub>, max event length, back end and its configuration). A warm run reuses a base state only on
@@ -55,8 +58,10 @@ an exact key match; T1 and T2 have different keys.
 | Enumeration (T-ref) | `ref_bits.bin`: bit-packed per (cell, start, policy); `rates.csv`: exact rate per cell and policy; `stages.json` |
 | Deadline (T-ref-est) | `prefix.json`: global prefix length G, N<sub>c</sub>, k<sub>c</sub> per cell and policy; intervals at the largest reached checkpoint; completed-but-unused trial count; `stages.json` |
 
-All outputs are fsynced (file and directory) before the runner exits or acknowledges. Each output carries a SHA-256
-used for the cross-device identity check.
+All outputs are fsynced (file and directory) before the runner exits or acknowledges. Each output carries a SHA-256.
+The result hash used for the cross-device identity check covers the whole result: for fixed n, the SHA-256 of the
+`cells.csv` and `hits.bin` hashes together (so two trials whose bits are swapped within a cell, which keeps every k, still
+change it); for T-ref, `ref_bits.bin`; for deadline runs, `prefix.json`.
 
 **2.4 Intervals (contract).** Clopper–Pearson from the regularised incomplete beta inverse, in C++ on the host,
 shared by both back ends. Before Stage A it is validated against SciPy `beta.ppf` for every k at n = 2,449
@@ -67,14 +72,19 @@ so the check uses the C++ value and logs the SciPy cross-check.
 **2.5 Spot verification.** After a fixed-n run, outside the timed region, 256 trial ids drawn from stream purpose
 `spot` are re-evaluated with the CPU tail method and compared in all fields (§5.1).
 
-**2.6 Deadline behaviour (contract).** No new work is issued after `T − drain`. In-flight batches are drained. A
-trial counts as complete if its result is in host memory when the prefix is computed. The prefix is the largest G
-such that all global indices g < G are complete, and N<sub>c</sub> = number of g < G with g mod 15 = c. Aggregation,
-intervals, writing, and fsync follow. The run is **late** if the harness sees the exit after the deadline; late runs
-and runs without valid output count as N<sub>c</sub> = 0 for every cell. The drain margin per device is 1.5 × the
-largest (exit − stop) time in 20 calibration runs (10 at B = 10 s, 10 at B = 300 s, stream purpose `calibration`),
-rounded up to 10 ms, and is fixed at the freeze. The scheduler may process trials in any order, but trials outside
-the prefix never count.
+**2.6 Deadline behaviour (contract).** The *cutoff* is `T − drain`: from then no new trial (CPU) or microbatch (GPU,
+checked before each microbatch, also inside a submission) is issued. Work in flight at the cutoff finishes. A trial
+counts as complete if its result is in host memory when the prefix is computed. The prefix is the largest G such
+that all global indices g < G are complete, and N<sub>c</sub> = number of g < G with g mod 15 = c. Aggregation,
+intervals, writing, and fsync follow. `prefix.json` records `cutoff_ns`, `stop_seen_ns` (first check past the
+cutoff), `loop_end_ns` (in-flight work done) and `completed_unused`. The run is **late** if the harness sees the exit
+after the deadline; late runs, runs stopped by their timeout (2B + 120 s), and runs without valid output count as
+N<sub>c</sub> = 0 for every cell. The drain margin per device is 1.5 × the largest (exit − cutoff) in 20 calibration
+runs with drain 0 (10 at B = 10 s, 10 at B = 300 s, stream purpose `calibration`, cache-cold, the frozen
+configuration), rounded up to 10 ms, and is fixed at the freeze. So the margin covers the in-flight remainder as well
+as aggregation and output (r2.1: r2 measured from the end of the loop and missed the in-flight part). A drain check
+with the margin (2 runs at every H4 budget) is recorded in the freeze. The scheduler may process trials in any order,
+but trials outside the prefix never count.
 
 ## 3. Trial stream `sf-stream-v1` (contract)
 
@@ -180,8 +190,10 @@ hashes agree. A mismatch stops Stage D until the cause is found (§4).
 - **Batches (contract for the sizing rule).** The *microbatch* (trials resident at once) is at most
   b<sub>max</sub> = ⌊(0.8 × F − M<sub>shared</sub>) / M<sub>trial</sub>⌋, where F is the free device memory read
   **once, after context creation and before any allocation of the back end**, so shared state is subtracted exactly
-  once. The back end reports F, total memory, M<sub>shared</sub>, M<sub>trial</sub>, scratch bytes, b<sub>max</sub>, and
-  the free memory after its allocations; the harness adds the `nvidia-smi` maximum during the run. Planned bytes
+  once. An explicit microbatch above b<sub>max</sub> is refused (`no microbatch fits`). The back end reports F, total
+  memory, M<sub>shared</sub>, M<sub>trial</sub>, scratch bytes, b<sub>max</sub>, the free memory after its resident
+  allocations and after the per-task tables (the last allocation), the live and peak live bytes (a re-allocation
+  replaces the earlier buffer in the count); the harness adds the `nvidia-smi` maximum during the run. Planned bytes
   (M<sub>shared</sub> + b · M<sub>trial</sub>) are always reported next to the reported allocation (F − free after
   allocation). The *submission batch* (trials per host round trip) is a multiple of the microbatch. Pilot: a sweep up to
   b<sub>max</sub>. Formal: chosen per (series, grid) from {64, 256, 1,024, b<sub>max</sub>} with the thread-count design
@@ -209,19 +221,34 @@ decision.
 ## 8. Instrumentation and harness
 
 - **Select sub-stages** (CPU incremental and both GPU paths): peak test, candidate collection, S and sort,
-  per-policy merge, reset; timers in every build (overhead < 1% at the canonical point, checked once against a
-  timer-free build). Counts (both-set size, neighbour comparisons, peaks, candidates) in diagnostic mode only.
+  per-policy merge, reset. CPU timers in every build (overhead < 1% at the canonical point, checked once against a
+  timer-free build); GPU stage events only in diagnostic runs (`--diag`), created once and reused. On G-hyb the
+  "order" span includes the candidate copy and the "merge" span is host work, so neither is device time. Counts
+  (both-set size, neighbour comparisons, peaks, candidates) in diagnostic mode only, CPU only.
 - **Configurations.** A run's back end is a configuration: CPU (threads, optional CPU list for `taskset`, parity set,
-  warm-up trials) or GPU (path, microbatch, submission, host threads, warm-up trials), identified by a short key
-  (`cpu:t6@0-5:none`, `cuda:inc:b256`). OpenMP runs with `OMP_PLACES=cores OMP_PROC_BIND=spread` inside the CPU list.
+  warm-up trials) or GPU (path, microbatch, submission, host threads, warm-up trials), identified by a key that
+  contains every one of them (`cpu:t6@0-5:none`, `cuda:inc:b256:h8:s1:w0`); two runs with one key ran one
+  configuration. Host threads are one count per (series, grid), never a table. Formal batches are integers (b<sub>max</sub>
+  is resolved at calibration). OpenMP runs with `OMP_PLACES=cores OMP_PROC_BIND=spread` inside the CPU list.
 - **Clock (contract).** `t0 = time.monotonic_ns()` immediately before spawn (cold, deadline) or before the request
   (warm); `t1` at `waitpid` or at the acknowledgement sent after the output fsync.
 - **Cold kinds (contract).** The harness runs `sync; echo 3 > /proc/sys/vm/drop_caches` (directly or by `sudo -n`).
-  If that succeeds the run is *cache-cold*, otherwise *process-cold*; the kind is in the record and the two are never
-  aggregated together. Formal launches refuse to start where the cache cannot be dropped.
+  If that write succeeds the run is *cache-cold*, otherwise *process-cold*; the kind is in the record and the two are
+  never aggregated together. The capability in the manifest is such an actual drop, not a guess from root or sudo.
+  Formal launches refuse to start where the cache cannot be dropped. A pilot plan may fix `--cold-kind process-cold`
+  (a P4 verification of a process-cold baseline).
 - **Warm blocks.** A server (`sf_run --serve`) is primed with a task of the same base-state key outside the timing;
-  then the timed requests of that condition follow. A reply with `base_cached = false` makes the run `not_warm`. The
-  server is closed before any cold or deadline run, so a cached state never holds memory during other runs.
+  then the timed requests of that condition follow. A reply with `base_cached = false` makes the run `not_warm`. A warm
+  request does not repeat S1: the input is hashed once per file identity (device, inode, size, mtime). The server is
+  closed before any cold or deadline run, so a cached state never holds memory during other runs. Its cgroup peak covers
+  the server's lifetime (priming and earlier requests) and is labelled so.
+- **Records that survive interruptions (contract).** Before every run the harness appends a `started` record (run id,
+  kind, condition, configuration key) to `attempts.jsonl`; the terminal record carries the same run id and is appended
+  as soon as the run ends (warm blocks too). A started run without a terminal record is a lost run: it invalidates a
+  formal launch and counts against completion in the pilot. A harness failure is a record (`harness_error`).
+- **Bounds on every run.** Formal runs: their timeout; deadline runs 2B + 120 s; warm requests and priming the
+  condition's timeout (the socket times out and the server is killed); benches their seconds + 900 s. Pilot runs: the
+  time box, i.e. the plan's remaining hours (`time box` status, the step stops).
 - **Order.** Cold repetitions are single items and each warm block is one item; all items of a step (pilot) or launch
   (formal) run in one order shuffled with a recorded seed, written before the first run.
 - **Resource sampler** (contract for what is recorded): each run in its own cgroup v2 group where permitted
@@ -235,7 +262,7 @@ decision.
 - **Profiling runs** (exploratory, never timed): `perf stat` cycles, instructions, LLC loads and misses, stalled cycles
   where available; unavailable counters are recorded.
 - **Timeouts** (formal): 3 × the conservative CPU-best projection of the condition; the run is killed and recorded as
-  censored at exactly the timeout.
+  censored at exactly the timeout. A condition with a censored run gets no category (r2.1, README "Verdict rules").
 
 ## 9. Run records and manifest
 
@@ -244,7 +271,10 @@ EC2, Linux), git commit and dirty flag, binary SHA-256s, CMake cache (compiler, 
 `nvcc` versions, GPU state (model, driver, total/used/free memory, other processes, persistence mode), `nvidia-smi -q`,
 `lscpu`, topology (logical CPUs, physical cores, SMT, NUMA, P/E mapping and its source), `/proc/meminfo` totals,
 uptime, governor, THP, `OMP_*`, capabilities (cache drop, cgroup, persistence, perf, taskset), EC2 metadata and the
-official on-demand price on AWS, input SHA-256s, protocol SHA-256, Python packages.
+official on-demand price on AWS (with the raw Price List response), input SHA-256s, protocol SHA-256, Python packages
+and `pip freeze`, the cgroup CPU quota and the CPUs this process may use (topology is restricted to them), the code
+fingerprint (SHA-256 over every tracked code, protocol and task file; results and documentation excluded), and the
+hardware fingerprint (runtime, CPU model, allowed CPUs, quota, RAM, GPU, driver, instance type).
 
 **Runs** (`runs.jsonl`, one line per run): mode, cold kind, condition, configuration and key, position, external
 times, stage timestamps, status (ok / late / timeout / error / width_fail / not_warm / identity_mismatch /
@@ -255,15 +285,21 @@ point, metadata, configuration, rate, setup, device memory fields, sampler recor
 **Layout.**
 
 ```
-results/pilot/<label>/      pilot-plan.json, amendments.jsonl, checks/, hashes.json, reference/,
-                            session-<k>/{env.json, steps.jsonl, runs.jsonl, bench.jsonl, order_*.json, outputs/},
-                            pilot-summary.json, pilot-summary.md, figs/
+results/pilot/<label>/      pilot-plan.json, amendments.jsonl, hashes.json, reference/attempt-<k>/,
+                            session-<k>/{env.json, checks/attempt-<j>/, attempts.jsonl, steps.jsonl, runs.jsonl,
+                            bench.jsonl, parity.md, outputs/<step>/attempt-<j>/}, pilot-summary.json, pilot-summary.md, figs/
 results/scaling/            scaling-decision.json, verification_<label>_action<i>.json
 results/formal/<label>/     reference/, calibration/<machine>/, protocol-freeze.json, d0/,
-                            launch-<i>-<cpu|gpu>/{env.json, order.json, runs.jsonl, calibration.jsonl, rates.jsonl,
-                            tdiag.jsonl, gate/, cpu_host/, outputs/, outputs_bits.tar.gz, SHA256SUMS},
-                            size-control/, verdicts_*.json, tables_*.md, figs/
+                            stage-a/launch-<i>/attempt-<k>/, stage-d/pair-<i>/<cpu|gpu>/attempt-<k>/,
+                            stage-d/size-control/attempt-<k>/, verdicts_*.json, tables_*.md, figs/
+  each attempt:             env.json, order.json, attempts.jsonl, runs.jsonl, calibration.jsonl, rates.jsonl,
+                            tdiag.jsonl, threads.json, gate/, cpu_host/, outputs/, outputs_bits.tar.gz, SHA256SUMS,
+                            ec2.json (after termination)
 ```
+
+Attempts are created fresh and never reused or overwritten; an interrupted or invalid attempt stays and is replaced
+by the next attempt of the same slot (same order and seeds). An archive is written once per attempt and read back
+before the archived files are removed.
 
 Large binaries go into compressed archives with checksums; if the public repository cannot hold them, only hashes and
 an external archive location are committed.
@@ -272,25 +308,49 @@ an external archive location are committed.
 
 - `analyze.py` computes every formal verdict from stored records alone: R1, R2 (projection with the launch's own rates
   at every task length, §11), C, H3 and H4 (launch-pair log-ratios, t-intervals, categories, censoring; only
-  cache-cold runs enter cold conditions), cost per task, D1, and the exploratory D3 (`cross-env`) and spend summary.
+  cache-cold runs enter cold conditions), cost, D1, and the exploratory D3 (`cross-env`) and spend summary.
+- **Validation before verdicts (contract, `p2/validate.py`).** An attempt counts only if: its env names the slot's
+  stage, role and index; status complete; formal identity matched; it ran under the committed scaling decision, the
+  freeze and the frozen code fingerprint (Stage D); every order item has exactly its records (cold 1, warm block its
+  repetitions, deadline 1); every T1/T2/T-ref run is ok or censored, cache-cold when cold, reproduces the reference hash
+  (Stage D) and has 0 spot mismatches; and no started run lacks a terminal record. The first valid attempt of a slot is
+  used; later attempts of a valid slot never are. A pair counts only if both launches are on distinct recorded
+  instances (also distinct from every other used launch), in one region, on one UTC day, in the registered order, and
+  its CPU gate has the reference golden hashes. Gates count only for what they show: device, full or partial,
+  64 starts (full), every item of that coverage passed, and the code and GPU they ran with.
+- **H4 identity (contract).** The reference bits and rates must carry the frozen hashes; exact rates are recounted
+  from the bits as float. For every live run the replicate, the round-robin structure (N<sub>c</sub> from G), the
+  cells, 0 ≤ k ≤ N, and every k<sub>c</sub> against the reference bits at the stream's starts are checked; each budget
+  needs exactly the registered seeds per device and pair. A failure blocks that budget's category ("invalid").
 - D1 model (contract): per-trial cost t = β0 + β1·C + β2·C<sub>w</sub> + β3·W + β4·P (+ β5/b on the GPU), with
   C = Σ<sub>k</sub>(cap<sub>k</sub> + 1), C<sub>w</sub> = Σ<sub>k</sub>(cap<sub>k</sub> + 1)·max(1, ⌊w<sub>k</sub>/2⌋),
   W = Σ<sub>k</sub>(L + w<sub>k</sub> − 1), P = policy count, b = batch size; sums over windows k < K<sub>max</sub>.
-  Non-negative least squares on rows scaled by 1/observed cost, fitted on the calibration split, judged on the 13
-  held-out points. Post-execution counts are used only in a separate explanatory fit.
-- Figures and tables are regenerated from stored results, and byte identity on regeneration is checked.
+  Non-negative least squares on rows scaled by 1/observed cost, fitted on the calibration split, judged on the 6
+  held-out points whose workload (series and prefix, policies, cells, maximum length; `p2.tasks.workload_fingerprint`)
+  is never run before D1 (`t_diag.heldout_judged`, r2.1). The other 7 held-out points have the workload of a
+  calibration or T-ref cell point and are reported apart as repeat predictions. Post-execution counts are used only in
+  a separate explanatory fit.
+- Figures and tables are regenerated from stored results; `make_figures.py … --check` renders twice and requires byte
+  identity. The H4 figure states each budget's category, late or invalid runs, and identity failures.
 
 ## 11. Pilot, projections, and scaling records
 
 **Pilot plan (contract).** `pilot.py plan` writes `pilot-plan.json` once (never rewritten): purpose (pilot or
 verification), machine profile and identity, topology, GPU state, capabilities, git state, binary, input, task and
 protocol hashes, the steps, sessions, repetitions, thread candidates (from the topology; the P-core list is given
-explicitly where the kernel does not expose it), microbatch sweep, bench settings, available hours, stop rules, and any
-cut with its reason. Changes are appended to `amendments.jsonl` with a reason before the run they affect; each step
-records how many amendments applied. Steps refuse to run without passing P0 checks, a GPU step without a path that
-passed the device gate, and any step once the hours are used up ("not started (time)"). The reference build starts only
-if its conservative projection × 1.1 fits the remaining hours; otherwise the per-cell rates and the projection are the
-result.
+explicitly where the kernel does not expose it), microbatch sweep, bench settings, available hours, cold kind, code
+fingerprint, stop rules, and any cut with its reason. Changes are appended to `amendments.jsonl` with a reason before
+the run they affect; each step records how many amendments applied.
+
+**Sessions (contract).** Every session is its own machine. `pilot.py check --session K` runs that session's P0 (CPU
+regression, stream, intervals, CPU gate, item 9, the partial gate on the session's own device per GPU path) and
+records its hardware fingerprint, code fingerprint and binaries. A step refuses to run without passed checks of its
+session, or if the hardware, code or binaries differ from them (a new Colab assignment is a new session), a GPU step
+without a path that passed that session's device gate, and any step once the hours are used up ("not started
+(time)"). Hours used count checks, finished steps, and steps cut off without a finish record (up to the last record
+they wrote). Threads, parity and microbatch are chosen per session and used only in that session; values are pooled
+across sessions only within one hardware fingerprint. The reference build starts only if its conservative projection
+× 1.1 fits the remaining hours; otherwise the per-cell rates and the projection are the result.
 
 **Projections (contract).**
 
@@ -307,13 +367,19 @@ result.
 
 **Scaling record.** `scaling.py draft` copies the pilot observations, failures, environments, and a catalogue of every
 measured metric with its value; a person completes the six items of the protocol and the actions. `scaling.py check`
-(required by every later step) rejects: any `TODO`; an action outside {none, environment, cpu-host, gpu}; `none` mixed
-with other actions; a target that is not a machine profile; an action without metrics; a metric without a baseline
-value, the three predicted values, or a gain threshold ≥ 1; a missing cost; formal machines without an identity rule;
-spent + planned above the cap; a pilot summary changed since the draft. Formal steps also require the record to be
-committed and unchanged.
+(required by every later step) rejects: any `TODO` or empty judgement (schedule, alternatives, constraint, hypothesis,
+falsification, stop, formal reason); no pilot observations; an action outside {none, environment, cpu-host, gpu};
+`none` mixed with other actions; a target that is not a machine profile; an action without metrics; a metric without
+a mode (e2e, completion, spread), a baseline equal to the value recomputed from the baseline label's raw records, three
+finite positive predictions whose gains are ordered conservative ≤ base ≤ optimistic, or a gain threshold ≥ 1;
+completion or spread metrics for anything but an `environment` action; a missing cost or instance-hours; formal
+machines without an identity rule; a formal plan without itemised costs (`budget.formal_items`); spent + planned above
+the cap; a pilot summary changed since the draft. A verification plan and every formal step require the record to pass
+this check and be committed; formal steps also require each action's committed P4 verification.
 
 **Metrics.** `e2e`: task, series, mode (cache-cold, process-cold, warm) and configuration, value = median over all ok
-runs of all sessions. `rate`: task point and configuration, value = median trials/s over ok benches (the 1 s microbatch probe excluded). The
-configuration may be a key or `best`, `best-cpu`, `best-gpu` (each machine's own best). Gain and verdicts as in the
-protocol (P4).
+runs (lower is better). `rate`: task point and configuration, value = median trials/s over ok benches (probes
+excluded; higher is better). `completion`: ok runs / all started runs of the condition, lost runs included (higher is
+better). `spread`: max / min of the ok times (lower is better). A metric may name a session; a label whose sessions ran
+on different hardware must. The configuration may be a key or `best`, `best-cpu`, `best-gpu` (each machine's own best).
+Gain and verdicts as in the protocol (P4).

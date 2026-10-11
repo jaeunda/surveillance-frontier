@@ -15,6 +15,7 @@ Pilot:
 """
 
 import argparse
+import sys
 import json
 from pathlib import Path
 
@@ -104,6 +105,12 @@ def fig_h4(v, out):
     ax.set_xlabel("wall-clock budget B (cold process, setup included)", fontsize=8, color=INK_2)
     ax.set_ylabel("RMSE over 360 rates vs exact reference", fontsize=8, color=INK_2)
     ax.set_title("H4: error at equal wall-clock (one line per launch)", fontsize=10, color=INK, loc="left")
+    notes = []
+    for r in rows:
+        late = sum(x["late_or_invalid"] for x in r["per_device"].values())
+        tag = r["category"] or r["status"]
+        notes.append(f"B={r['budget_s']:g}s: {tag}; late/invalid runs {late}; identity failures {r['identity_failures']}")
+    ax.text(0.01, 0.01, "\n".join(notes), transform=ax.transAxes, fontsize=6.5, color=INK_2, va="bottom")
     ax.legend(handles=[plt.Line2D([], [], color=DEVICE[d], linewidth=2, marker="o", label=d.upper()) for d in DEVICE],
               frameon=False, fontsize=8)
     fig.tight_layout()
@@ -180,21 +187,36 @@ def fig_microbatch(summary, out):
     return True
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("kind", choices=["formal", "pilot"])
-    ap.add_argument("label")
-    args = ap.parse_args()
-    root = Path(__file__).resolve().parent / "results" / args.kind / args.label
-    figs = root / "figs"
+def render(kind, root, figs):
     figs.mkdir(exist_ok=True)
-    if args.kind == "pilot":
+    if kind == "pilot":
         s = json.loads((root / "pilot-summary.json").read_text())
         print(f"pilot_microbatch.png: {'written' if fig_microbatch(s, figs / 'pilot_microbatch.png') else 'no data'}")
         return
     v = json.loads((root / "verdicts_stage-d.json").read_text())
     for name, fn in [("fig1_h3.png", fig_h3), ("fig2_h4.png", fig_h4), ("fig3_d1.png", fig_d1)]:
         print(f"{name}: {'written' if fn(v, figs / name) else 'no data'}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("kind", choices=["formal", "pilot"])
+    ap.add_argument("label")
+    ap.add_argument("--check", action="store_true", help="render twice into scratch directories; byte-identical (SPEC §10)")
+    args = ap.parse_args()
+    root = Path(__file__).resolve().parent / "results" / args.kind / args.label
+    if not args.check:
+        render(args.kind, root, root / "figs")
+        return
+    import tempfile
+    with tempfile.TemporaryDirectory() as t:
+        a, b = Path(t) / "a", Path(t) / "b"
+        render(args.kind, root, a)
+        render(args.kind, root, b)
+        names = sorted(p.name for p in a.iterdir())
+        same = all((a / n).read_bytes() == (b / n).read_bytes() for n in names) and names == sorted(p.name for p in b.iterdir())
+    print(f"figures {'byte-identical' if same else 'DIFFER'} over two renders ({len(names)} files)")
+    sys.exit(0 if same else 1)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,9 @@
 // Resident state (uploaded at construction): the series, per-row constants, the base heads of both features, the S
 // table, per-policy caps, the policies and their base episodes. Per task (set_cells): event factor tables. Per
 // microbatch: the scratch of SPEC §6, sized for the base state's maximum event length. A submission is `submission`
-// microbatches; the host waits for each microbatch's results (bits, or candidates on G-hyb) before the next.
+// microbatches; the host waits for each microbatch's results (bits, or candidates on G-hyb) before the next, and
+// checks the stop condition before issuing each microbatch. Copies are synchronous cudaMemcpy calls (a known gap to
+// the "no synchronisation inside S5" target of SPEC §2.1, recorded in IMPLEMENTATION.md).
 #include <omp.h>
 
 #include <algorithm>
@@ -49,7 +51,9 @@ struct DevBuf {
     n = 0;
   }
   size_t bytes() const { return n * sizeof(T); }
+  // total counts live bytes: a re-allocation first takes the previous buffer's bytes off
   void alloc(size_t count, int64_t& total) {
+    total -= static_cast<int64_t>(bytes());
     reset();
     p = static_cast<T*>(dev_malloc(count * sizeof(T)));
     n = count;
@@ -93,6 +97,7 @@ class GpuBackend : public BatchEvaluator {
     alloc_scratch();
     size_t total = 0;
     mem_info(free_after_alloc_, total);
+    note_peak();
   }
 
   std::string name() const override { return cfg_.path == "inc" ? "gpu-inc" : "gpu-hyb"; }
@@ -102,7 +107,10 @@ class GpuBackend : public BatchEvaluator {
            " shared_bytes=" + std::to_string(shared_bytes_) + " scratch_bytes=" + std::to_string(scratch_bytes_) +
            " b_max=" + std::to_string(b_max_) + " memory_fraction=" + std::to_string(cfg_.memory_fraction) +
            " free_at_context_bytes=" + std::to_string(free_at_context_) +
-           " free_after_alloc_bytes=" + std::to_string(free_after_alloc_) + " total_bytes=" + std::to_string(total_bytes_);
+           " free_after_alloc_bytes=" + std::to_string(free_after_alloc_) +
+           " free_after_cells_bytes=" + std::to_string(free_after_cells_) +
+           " live_bytes=" + std::to_string(shared_bytes_alloc_ + scratch_bytes_) +
+           " peak_live_bytes=" + std::to_string(peak_live_) + " total_bytes=" + std::to_string(total_bytes_);
   }
 
   void set_cells(const std::vector<CellPlan>& cells) override {
@@ -130,6 +138,10 @@ class GpuBackend : public BatchEvaluator {
     factors_d_.upload(factors, shared_bytes_alloc_, bytes_h2d_);
     a_.cells = cells_d_.p;
     a_.factors = factors_d_.p;
+    // free memory after the last allocation of ours (the per-task tables), for the memory record of SPEC §6
+    size_t total = 0;
+    mem_info(free_after_cells_, total);
+    note_peak();
   }
 
   void evaluate(const TrialBatch& batch, BatchOutput& out, const std::function<bool()>& stop) override {
@@ -138,7 +150,10 @@ class GpuBackend : public BatchEvaluator {
     if (out.words != policy_words(b_.policies.size())) throw std::invalid_argument("GPU back end: output words");
     if (cells_.empty()) throw std::invalid_argument("GPU back end: no cells");
     if (batch.space) {
-      if (!space_d_.p) space_d_.alloc(1, shared_bytes_alloc_);
+      if (!space_d_.p) {
+        space_d_.alloc(1, shared_bytes_alloc_);
+        note_peak();
+      }
       h2d(space_d_.p, batch.space, sizeof(TrialSpace));
       bytes_h2d_ += sizeof(TrialSpace);
       a_.space = space_d_.p;
@@ -147,10 +162,14 @@ class GpuBackend : public BatchEvaluator {
     const auto t0 = std::chrono::steady_clock::now();
     const int64_t sub = b_micro_ * std::max<int64_t>(1, cfg_.submission);
     WorkerRecord rec;
-    for (int64_t pos = 0; pos < n;) {
-      if (stop()) break;
+    bool stopped = false;
+    for (int64_t pos = 0; pos < n && !stopped;) {
       const int64_t end = std::min(n, pos + sub);
       for (; pos < end;) {
+        if (stop()) {  // no microbatch is issued after the cutoff, also inside a submission
+          stopped = true;
+          break;
+        }
         const int64_t m = std::min(b_micro_, end - pos);
         run_micro(batch, pos, m, out);
         pos += m;
@@ -198,7 +217,7 @@ class GpuBackend : public BatchEvaluator {
   BackendStats take_stats() override {
     stats_.bytes_h2d = bytes_h2d_;
     stats_.bytes_d2h = bytes_d2h_;
-    stats_.peak_device_bytes = shared_bytes_alloc_ + scratch_bytes_;
+    stats_.peak_device_bytes = peak_live_;
     BackendStats s = std::move(stats_);
     stats_ = BackendStats{};
     bytes_h2d_ = bytes_d2h_ = 0;
@@ -287,6 +306,9 @@ class GpuBackend : public BatchEvaluator {
     b_max_ = std::max<int64_t>(0, static_cast<int64_t>(room / static_cast<double>(ws_bytes_)));
     b_micro_ = cfg_.microbatch > 0 ? cfg_.microbatch : b_max_;
     if (b_micro_ < 1) throw std::runtime_error("GPU back end: no microbatch fits (b_max = 0)");
+    if (b_micro_ > b_max_)
+      throw std::runtime_error("GPU back end: no microbatch fits: microbatch " + std::to_string(b_micro_) +
+                               " exceeds b_max = " + std::to_string(b_max_));
   }
 
   void alloc_scratch() {
@@ -359,9 +381,13 @@ class GpuBackend : public BatchEvaluator {
     const int64_t K = a_.K, P = a_.P;
     Args a = a_;
     a.g0 = batch.g0 + pos;
+    // stage timers only in diagnostic runs (--diag); their events are created once and reused, so an ordinary timed
+    // run creates no events at all
     const bool timed = cfg_.eval.diag;
-    PhaseTimer t_begin, t_feat, t_tail, t_both, t_peak, t_compact, t_order, t_merge;
-    if (timed) t_begin.mark();
+    if (timed && !timers_) timers_ = std::make_unique<Timers>();
+    PhaseTimer* tm = timed ? timers_->t : nullptr;
+    enum { t_begin, t_feat, t_both, t_peak, t_compact, t_order, t_merge };
+    if (timed) tm[t_begin].mark();
     std::vector<int32_t> cell(m);
     std::vector<int64_t> start(m);
     if (batch.cells) {
@@ -384,24 +410,23 @@ class GpuBackend : public BatchEvaluator {
     }
     launch<Args, gpu::k_rows>(m * K, a);
     launch<Args, gpu::k_features>(m * a.F, a);
-    if (timed) t_feat.mark();
+    if (timed) tm[t_feat].mark();
     launch<Args, gpu::k_tails>(m * 2 * K, a);
-    if (timed) t_tail.mark();
     launch<Args, gpu::k_both>(m * K, a);
-    if (timed) t_both.mark();
+    if (timed) tm[t_both].mark();
     launch<Args, gpu::k_peaks>(m * a.T, a);
-    if (timed) t_peak.mark();
+    if (timed) tm[t_peak].mark();
     launch<Args, gpu::k_compact>(m, a);
-    if (timed) t_compact.mark();
+    if (timed) tm[t_compact].mark();
 
     std::vector<uint8_t> hit(m * P), ovl(m * P);
     std::vector<std::vector<Episode>> host_ordered;  // G-hyb, or traces
     std::vector<std::vector<std::vector<Episode>>> host_kept;
     if (cfg_.path == "inc") {
       launch<Args, gpu::k_order>(m, a);
-      if (timed) t_order.mark();
+      if (timed) tm[t_order].mark();
       launch<Args, gpu::k_merge>(m * P, a);
-      if (timed) t_merge.mark();
+      if (timed) tm[t_merge].mark();
       d2h(hit.data(), hit_d_.p, hit.size());
       d2h(ovl.data(), ovl_d_.p, ovl.size());
       bytes_d2h_ += 2 * m * P;
@@ -418,7 +443,7 @@ class GpuBackend : public BatchEvaluator {
         d2h(cand[i].data(), cand_d_.p + i * a.T, clen[i] * sizeof(CandD));
         bytes_d2h_ += clen[i] * static_cast<int64_t>(sizeof(CandD));
       }
-      if (timed) t_order.mark();
+      if (timed) tm[t_order].mark();
       host_ordered.resize(m);
       host_kept.resize(m);
 #pragma omp parallel for num_threads(std::max(1, cfg_.threads)) schedule(dynamic, 1)
@@ -438,7 +463,7 @@ class GpuBackend : public BatchEvaluator {
           ovl[i * P + p] = d.overlap;
         }
       }
-      if (timed) t_merge.mark();
+      if (timed) tm[t_merge].mark();
     }
     for (int64_t i = 0; i < m; ++i) {
       const int64_t o = pos + i;
@@ -448,18 +473,23 @@ class GpuBackend : public BatchEvaluator {
     }
     if (out.traces) fill_traces(pos, m, cell, start, host_ordered, host_kept, out);
     if (timed) {
-      t_merge.wait();
+      tm[t_merge].wait();
       StageTimes& s = stats_.sum;
-      s.scan_ms += t_feat.ms_since(t_begin);
-      s.rank_ms += t_both.ms_since(t_feat);
-      s.peak_ms += t_peak.ms_since(t_both);
-      s.collect_ms += t_compact.ms_since(t_peak);
-      s.order_ms += t_order.ms_since(t_compact);
-      s.merge_ms += t_merge.ms_since(t_order);
-      s.select_ms += t_merge.ms_since(t_both);
-      (void)t_tail;
+      s.scan_ms += tm[t_feat].ms_since(tm[t_begin]);
+      s.rank_ms += tm[t_both].ms_since(tm[t_feat]);
+      s.peak_ms += tm[t_peak].ms_since(tm[t_both]);
+      s.collect_ms += tm[t_compact].ms_since(tm[t_peak]);
+      s.order_ms += tm[t_order].ms_since(tm[t_compact]);
+      s.merge_ms += tm[t_merge].ms_since(tm[t_order]);
+      s.select_ms += tm[t_merge].ms_since(tm[t_both]);
     }
   }
+
+  void note_peak() { peak_live_ = std::max(peak_live_, shared_bytes_alloc_ + scratch_bytes_); }
+
+  struct Timers {
+    PhaseTimer t[7];
+  };
 
   void check_error() {
     int32_t e = 0;
@@ -531,8 +561,9 @@ class GpuBackend : public BatchEvaluator {
   std::vector<uint8_t> check_cells_;
   float min_volume_ = 0, max_volume_ = 0;
   int64_t ws_bytes_ = 0, shared_bytes_ = 0, shared_bytes_alloc_ = 0, scratch_bytes_ = 0;
-  int64_t b_max_ = 0, b_micro_ = 0, bytes_h2d_ = 0, bytes_d2h_ = 0;
-  size_t free_at_context_ = 0, free_after_alloc_ = 0, total_bytes_ = 0;
+  int64_t b_max_ = 0, b_micro_ = 0, bytes_h2d_ = 0, bytes_d2h_ = 0, peak_live_ = 0;
+  size_t free_at_context_ = 0, free_after_alloc_ = 0, free_after_cells_ = 0, total_bytes_ = 0;
+  std::unique_ptr<Timers> timers_;
   BackendStats stats_;
   DevBuf<float> low_d_, high_d_, vol_d_, fr_d_, fv_d_, factors_d_;
   DevBuf<RowD> rows_d_;

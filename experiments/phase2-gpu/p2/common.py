@@ -47,7 +47,8 @@ def write_json(path, obj):
 
 
 def append_jsonl(path, rec):
-    """One record per line, fsynced: a run that was started is never lost from the record."""
+    """One record per line, appended and fsynced at once (callers write a 'started' record before a run and the
+    terminal record after it, so a run cut off by an interruption still leaves its start)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
@@ -91,6 +92,46 @@ def committed_unchanged(path):
     tracked = sh(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", rel]) is not None
     changed = sh(["git", "-C", str(ROOT), "status", "--porcelain", "--", rel])
     return tracked and not changed
+
+
+# Files whose content defines what is measured: the engine, the build, the experiment code, the protocol, the tasks.
+# Documentation and results are not part of it.
+CODE_PATHS = ["CMakeLists.txt", "engine", "experiments/phase2-gpu"]
+CODE_SUFFIXES = (".cpp", ".hpp", ".cu", ".inl", ".h", ".txt", ".py", ".sh", ".json", ".cmake")
+
+
+def code_fingerprint():
+    """SHA-256 over (path, content) of every tracked code file (CODE_PATHS, CODE_SUFFIXES; results/ excluded), as
+    read from the working tree. Gates, calibrations, the freeze and every launch record it; later steps compare it."""
+    listed = sh(["git", "-C", str(ROOT), "ls-files", "--", *CODE_PATHS]) or ""
+    h = hashlib.sha256()
+    for rel in sorted(listed.splitlines()):
+        if "/results/" in rel or not rel.endswith(CODE_SUFFIXES):
+            continue
+        p = ROOT / rel
+        h.update(rel.encode() + b"\0" + (sha256_file(p).encode() if p.exists() else b"missing") + b"\n")
+    return h.hexdigest()
+
+
+def new_attempt_dir(parent):
+    """parent/attempt-<k> for the next unused k, created empty. Attempts are never reused or overwritten."""
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    k = 1
+    while (parent / f"attempt-{k}").exists():
+        k += 1
+    d = parent / f"attempt-{k}"
+    d.mkdir()
+    return d
+
+
+def fresh_dir(path):
+    """Create path; refuse an existing non-empty directory (an output is never overwritten)."""
+    path = Path(path)
+    if path.exists() and any(path.iterdir()):
+        raise FileExistsError(f"{path} exists and is not empty")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def geomean(values):
