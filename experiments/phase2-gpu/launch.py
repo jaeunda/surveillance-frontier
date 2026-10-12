@@ -161,7 +161,7 @@ def run_items(items, d, role, build, freeze, timeouts, ref, watch, env, host=Non
         to = timeouts.get(key)
 
         def keep(rec):
-            if rec.get("status") == "ok" and c["task"] in ("T1-curve", "T2-policy-map"):
+            if rec.get("status") == "ok" and c["task"] in ("T1-curve", "T2-policy-map") and rec.get("mode") != "warm-priming":
                 rec["spot_mismatches"] = spot(rec, build, spot_cfg)
                 if rec["spot_mismatches"] != 0:
                     rec["status"] = "spot_mismatch"

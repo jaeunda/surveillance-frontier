@@ -5,6 +5,7 @@ Markdown cells: every line must start with '# ' (or be '#'), which is stripped.
 """
 import json
 import sys
+from pathlib import Path
 
 
 def convert(src_path, out_path):
@@ -26,7 +27,7 @@ def convert(src_path, out_path):
             cell.update({"execution_count": None, "outputs": []})
         cells.append(cell)
 
-    for line in open(src_path, encoding="utf-8").read().splitlines():
+    for line in Path(src_path).read_text(encoding="utf-8").splitlines():
         if line.startswith("# %%"):
             flush()
             kind = "markdown" if "[markdown]" in line else "code"
@@ -45,7 +46,7 @@ def convert(src_path, out_path):
         "nbformat": 4,
         "nbformat_minor": 0,
     }
-    json.dump(nb, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    Path(out_path).write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"{out_path}: {len(cells)} cells")
 
 

@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import analyze  # noqa: E402
 import launch  # noqa: E402
+import pilot  # noqa: E402
 import scaling  # noqa: E402
 import stream  # noqa: E402
 from p2 import common, formal, harness, machine, projection, records, stats, validate  # noqa: E402
@@ -57,7 +59,7 @@ def env_of(stage, role, i, *, iid, started, freeze_sha=None, status="complete", 
 
 def write_attempt(label_dir, stage, role, i, times, *, iid, started, freeze_sha=None, cold_kind="cache-cold",
                   one_run=False, deadline=None, **env_kw):
-    """An attempt whose runs follow its order exactly (cold 1 record, warm block reps records, deadline 1 record).
+    """An attempt whose runs follow its order exactly (cold 1 record, warm block 1 priming + reps records, deadline 1).
     times: {condition key: seconds}; deadline: {(B, replicate): prefix dict or None}."""
     slot = (label_dir / "stage-a" / f"launch-{i}") if stage == "A" else (label_dir / "stage-d" / f"pair-{i}" / role)
     d = common.new_attempt_dir(slot)
@@ -75,6 +77,8 @@ def write_attempt(label_dir, stage, role, i, times, *, iid, started, freeze_sha=
                 continue
             runs.append({**base, "mode": "cold", "rep": it["rep"], "e2e_s": times[key], "cold_kind": cold_kind})
         elif it["kind"] == "warm-block":
+            runs.append({"task": it["task"], "series": it["series"], "position": pos, "status": "ok",
+                         "mode": "warm-priming"})
             for r in range(1 if one_run else it["reps"]):
                 runs.append({**base, "mode": "warm", "rep": r, "e2e_s": times[key]})
         else:
@@ -490,6 +494,195 @@ def test_records(tmp):
     finally:
         records.RESULTS = old
 
+# ---- pilot control (Colab pre-run review R1-R8, 2026-10-12) ----
+
+def _topo(allowed, logical, quota=None):
+    return {"logical": logical, "allowed_cpus": allowed, "physical_cores": logical, "smt": False,
+            "first_thread_per_core": allowed, "p_cores": None, "cgroup_cpu_max": quota}
+
+
+def _session_files(root, label, k, *, runs=(), benches=(), attempts=(), hw="hw1"):
+    sd = root / "pilot" / label / f"session-{k}"
+    jdump(sd / "env.json", {"hardware_fingerprint": hw})
+    jsonl(sd / "runs.jsonl", list(runs))
+    jsonl(sd / "bench.jsonl", list(benches))
+    jsonl(sd / "attempts.jsonl", list(attempts))
+    return sd
+
+
+def test_pilot(tmp):
+    root = tmp / "pilot-results"
+    old = (records.RESULTS, pilot.RESULTS)
+    records.RESULTS = pilot.RESULTS = root
+    try:
+        _test_pilot(tmp, root)
+    finally:
+        records.RESULTS, pilot.RESULTS = old
+
+
+def _test_pilot(tmp, root):
+    # R3: CPU baseline and candidates come from each session's own CPUs, never from the plan's machine
+    plan = {"p_cores": None}
+    two, eight = pilot.session_cpu_setup(plan, _topo("0-1", 2)), pilot.session_cpu_setup(plan, _topo("0-7", 8))
+    check(two["baseline"]["threads"] == 2 and eight["baseline"]["threads"] == 8
+          and max(c["threads"] for c in eight["thread_candidates"]) == 8,
+          "review R3: plan on 2 CPUs, session on 8 -> baseline and candidates 8 (was 2)")
+    check(max(c["threads"] for c in two["thread_candidates"]) == 2, "review R3: 8 -> 2 CPUs: no candidate above 2")
+    pc = pilot.session_cpu_setup({"p_cores": "0-5"}, _topo("8-15", 8))
+    check(all(c["cpus"] is None or set(machine._cpulist(c["cpus"])) <= set(range(8, 16)) for c in pc["thread_candidates"])
+          and pc["note"], "review R3: renumbered CPUs: the plan's P-core pinning is not used")
+    q = pilot.session_cpu_setup(plan, _topo("0-7", 8, "200000 100000"))
+    check(q["baseline"]["threads"] == 2 and max(c["threads"] for c in q["thread_candidates"]) == 2,
+          "review R3: a CPU quota of 2 caps the threads on 8 allowed CPUs")
+
+    # R1: a spot mismatch excludes the GPU path; a CPU spot mismatch excludes the session
+    g = {"task": "T1-curve", "series": "1m-quarter", "mode": "cold", "cold_kind": "process-cold"}
+    _session_files(root, "r1", 1, runs=[{**g, "status": "spot_mismatch", "config_key": "cuda:inc:b64:h2:s1:w0",
+                                          "e2e_s": 5.0, "run_id": "a"},
+                                         {**g, "status": "ok", "config_key": "cuda:hyb:b64:h2:s1:w0", "e2e_s": 5.0,
+                                          "run_id": "b"}])
+    bad = records.invalid("r1")
+    check(bad["paths"] == {"inc"}, "review R1: spot_mismatch stops the path (was path_stopped False)")
+    _session_files(root, "r1", 2, runs=[{**g, "status": "spot_mismatch", "config_key": "cpu:t2:none", "run_id": "c"}])
+    check(records.invalid("r1")["sessions"] == {2}, "review R1: a CPU output mismatch stops its session")
+    cat = records.catalog("r1")
+    check(not any("inc" in str(m.get("config")) or "inc" in str(m.get("value_config")) for m in cat),
+          "review R1: an excluded path gives no metric")
+    jsonl(root / "pilot" / "r1" / "reverify.jsonl", [{"task": "T1-curve", "series": "1m-quarter", "session": 1,
+                                                       "config_key": "cuda:hyb:b64:h2:s1:w0", "match": False}])
+    check(records.invalid("r1")["paths"] == {"inc", "hyb"}, "review R1: a later mismatch with the CPU reference excludes")
+
+    # R2: a condition with a timeout has no E2E; an all-timeout condition still has completion 0
+    w = {"task": "T2-policy-map", "series": "1s-week", "mode": "warm", "config_key": "cpu:t2:none"}
+    _session_files(root, "r2", 1, runs=[{**w, "status": "ok", "e2e_s": 100.0, "run_id": "1"},
+                                         {**w, "status": "timeout", "e2e_s": 900.0, "run_id": "2"},
+                                         {**w, "status": "not started (run cap)", "runs_not_started": 1},
+                                         {**w, "config_key": "cpu:t1:none", "status": "timeout", "e2e_s": 900.0,
+                                          "run_id": "3"}])
+    m = {"kind": "e2e", "task": "T2-policy-map", "series": "1s-week", "mode": "warm", "config": "best-cpu"}
+    check(records.observed("r2", m)[0] is None, "review R2: ok 100 s + timeout 900 s: no E2E, no best (was [100.0])")
+    comp = {x["value_config"]: x["value"] for x in records.catalog("r2") if x["kind"] == "completion"
+            and x["config"] in ("cpu:t2:none", "cpu:t1:none") and "session" not in x}
+    check(comp == {"cpu:t2:none": 1 / 3, "cpu:t1:none": 0.0},
+          "review R2: completion over planned runs, also 0 for an all-timeout condition (was absent)")
+    c = records.counts([{"status": "ok"}, {"status": "timeout"}, {"status": "lost"}, {"status": "not started (x)"}])
+    check((c["planned"], c["started"], c["ok"], c["censored"], c["lost"], c["not_started"]) == (4, 3, 1, 1, 1, 1)
+          and c["completion"] == 0.25 and abs(c["completion_started"] - 1 / 3) < 1e-12,
+          "review R2: planned / started / ok / censored / lost / not started counts")
+
+    # R7: lost benches and primings are counted
+    _session_files(root, "r7", 1, attempts=[
+        {"event": "started", "run_id": "b1", "kind": "bench", "condition": {"task": "x"}, "config_key": "cpu:t2:none"},
+        {"event": "started", "run_id": "p1", "kind": "priming", "condition": {"task": "T1-curve"},
+         "config_key": "cpu:t2:none"}])
+    runs, benches = records.label_records("r7")
+    check([r["status"] for r in benches] == ["lost"] and [r["mode"] for r in runs] == ["warm-priming"],
+          "review R7: a lost bench and a lost priming are records (were dropped)")
+
+    # R5: no P0 check starts when the plan's hours are used up
+    d = root / "pilot" / "r5"
+    jdump(d / "pilot-plan.json", {"hours_available": 1.0, "hours_per_session": None, "sessions": 2, "machine": "colab"})
+    jsonl(d / "session-1" / "steps.jsonl", [{"step": "check", "step_id": "x", "status": "complete", "elapsed_s": 3600}])
+    calls = []
+    old_run, old_env = pilot.run_logged, pilot.machine.environment
+    pilot.run_logged = lambda *a, **k: calls.append(a)
+    pilot.machine.environment = lambda *a, **k: calls.append("env")
+    try:
+        pilot.cmd_check(type("A", (), {"label": "r5", "session": 2, "build": tmp, "paths": "inc,hyb",
+                                       "skip_phase1_hits": True})())
+        ok = False
+    except SystemExit:
+        ok = True
+    finally:
+        pilot.run_logged, pilot.machine.environment = old_run, old_env
+    check(ok and calls == [] and read_json_lines(d / "session-2" / "steps.jsonl")[-1]["status"] == "not started (time)",
+          "review R5: hours used up -> P0 not started, no check command run (was 6 commands)")
+    try:
+        mark = f"30.{os.getpid()}"  # unique to this run
+        common.run_logged([sys.executable, "-c", "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',"
+                           f"'import time; time.sleep({mark})']); time.sleep({mark})"], tmp / "rl.log", timeout=1)
+        ok = False
+    except subprocess.TimeoutExpired:
+        ok = True
+    for _ in range(50):  # the killed, orphaned child is reaped by init shortly after
+        left = subprocess.run(["pgrep", "-f", f"sleep.{mark}"], capture_output=True, text=True).stdout.split()
+        if not left:
+            break
+        time.sleep(0.1)
+    check(ok and not left, "review R5: a timed-out check is killed with its children")
+
+    # R6: an unexpected exception is recorded as failed, never complete; a lost finish record leaves it unfinished
+    sd = tmp / "r6"
+    try:
+        pilot.run_attempt(sd, "rates", 1.0, lambda: (_ for _ in ()).throw(ValueError("synthetic")))
+    except ValueError:
+        pass
+    last = read_json_lines(sd / "steps.jsonl")[-1]
+    check(last["status"] == "failed" and "ValueError" in last["error"], "review R6: ValueError -> failed (was complete)")
+    calls = []
+    real = pilot.append_jsonl
+
+    def flaky(path, rec):
+        calls.append(rec)
+        if len(calls) == 2:
+            raise OSError("synthetic I/O failure")
+        real(path, rec)
+    pilot.append_jsonl = flaky
+    try:
+        pilot.run_attempt(tmp / "r6b", "rates", 1.0, lambda: None)
+    except OSError:
+        pass
+    finally:
+        pilot.append_jsonl = real
+    check(read_json_lines(tmp / "r6b" / "steps.jsonl")[-1].get("event") == "started",
+          "review R6: a finish record that cannot be written leaves the step unfinished, not complete")
+
+    # R7: hours of an unfinished attempt come from its heartbeats, not from later file times
+    sd = tmp / "r7t"
+    jsonl(sd / "steps.jsonl", [{"event": "started", "step": "rates", "step_id": "s1", "wall": 1000.0}])
+    jsonl(sd / "heartbeats.jsonl", [{"step_id": "s1", "wall": 1060.0}])
+    before = pilot.session_time(sd)
+    jsonl(sd / "runs.jsonl", [{"x": 1}])  # a later record (new mtime) of another attempt
+    os.utime(sd / "runs.jsonl", (1e10, 1e10))
+    after = pilot.session_time(sd)
+    check(before == after and abs(after["unfinished_lower_h"] - 60 / 3600) < 1e-9
+          and abs(after["unfinished_upper_h"] - (60 + pilot.HEARTBEAT_S) / 3600) < 1e-9,
+          "review R7: unfinished time = start to last heartbeat (+ interval), unchanged by later mtimes")
+
+    # R4: parity adopted after the T-ref cell rates: the build uses the rates' configuration and says so
+    sd = tmp / "r4"
+    cfg = {"device": "cpu", "threads": 2, "cpus": None, "parity": "none", "warmup_trials": 0, "name": "all"}
+    jsonl(sd / "bench.jsonl", [{"kind": "tref-rate", "config": cfg, "config_key": "cpu:t2:none", "status": "ok",
+                                "trials_per_s": 100.0, "meta": {"tref_cell": {"cell": c}}} for c in range(15)]
+          + [{"kind": "parity-adopted", "parity": "PC1"}])
+    fake = type("S", (), {"benches": sd / "bench.jsonl",
+                          "cpu_config": lambda self: {**cfg, "parity": "PC1"}})()
+    c4, p4, why = pilot.tref_basis(fake)
+    check(c4 is not None and c4["parity"] == "none" and p4["status"] == "ok" and "not used" in why,
+          "review R4: rates before parity still give the build its configuration (was 'run tref-rates first')")
+    rate = lambda L, v: {"kind": "rate", "status": "ok", "config_key": "cpu:t2:none", "trials_per_s": v,  # noqa: E731
+                         "setup_s": 0, "meta": {"calibration": {"series": "1m-quarter", "grid": "P1", "L": L}}}
+    benches = [rate(L, 1000.0) for L in PROTOCOL["tasks"]["T1-curve"]["lengths"]]
+    wr = {"task": "T1-curve", "series": "1m-quarter", "mode": "warm", "config_key": "cpu:t2:none", "_session": 1}
+    pc = pilot.projection_checks([{**wr, "status": "ok", "e2e_s": 10.0}], benches, [["T1-curve", "1m-quarter"]])
+    check(pc[0]["check"] == "verified" and pc[0]["observed_over_projected_base"] > 0, "review R4: same-config check")
+    pc = pilot.projection_checks([{**wr, "status": "ok", "e2e_s": 10.0}, {**wr, "status": "timeout", "e2e_s": 900.0}],
+                                 benches, [["T1-curve", "1m-quarter"]])
+    check(pc[0]["check"].startswith("unverified"), "review R4: a censored warm condition leaves the projection unverified")
+
+    # R7: an output restored without its files is artifact_missing
+    out = tmp / "art"
+    out.mkdir()
+    (out / "cells.csv").write_text("x")
+    man = common.manifest(out)
+    (out / "cells.csv").unlink()
+    ap = pilot.artifact_problems([{"run_id": "r", "out": str(out), "out_manifest": man, "status": "ok"}])
+    check(len(ap) == 1 and ap[0]["artifact_missing"] == ["cells.csv"], "review R7: missing output files are reported")
+
+
+def read_json_lines(path):
+    return [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()]
+
 
 def main():
     test_stats()
@@ -504,6 +697,7 @@ def main():
             test_gates(tmp)
             test_h4(tmp)
             test_records(tmp)
+            test_pilot(tmp)
             test_freeze_refuses(tmp)
         finally:
             formal.formal_dir = old

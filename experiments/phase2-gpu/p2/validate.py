@@ -20,7 +20,7 @@ PARTIAL_GATE_ITEMS = {1, 2, 3, 5, 7, 8}
 
 
 def expected_records(item):
-    return item["reps"] if item["kind"] == "warm-block" else 1
+    return item["reps"] + 1 if item["kind"] == "warm-block" else 1  # a warm block: its priming record + the requests
 
 
 def unfinished(d):
@@ -74,6 +74,10 @@ def launch_problems(d, stage, role, i, freeze=None, decision_sha=None):
             bad = []
             if r.get("status") not in COUNTED_OK:
                 bad.append(f"status {r.get('status')}")
+            if r.get("mode") == "warm-priming":
+                if bad:
+                    out.append(f"order item {pos} priming: {', '.join(bad)}")
+                continue  # outside the timing: no output identity of its own
             if r.get("status") == "ok" and (r.get("identity_ok") is False or
                                             (stage == "D" and r.get("identity_ok") is not True)):
                 bad.append("output differs from the reference or was not compared with it")

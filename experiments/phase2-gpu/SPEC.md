@@ -256,9 +256,14 @@ decision.
   on GPU machines `nvidia-smi` SM/memory clocks, memory used, power, utilisation. The runner records `getrusage` and each
   worker's CPU and affinity at loop start and end.
 - **Identity during runs.** Every fixed-n output is compared with the reference hash (pilot: the first CPU result of
-  that label with 0 spot mismatches; formal: Stage B); a mismatch marks the run `identity_mismatch`, stops the pilot
-  step, and excludes that GPU path from later pilot steps. After a fixed-n run, outside the timing, 256 trial ids from
-  stream purpose `spot` are re-evaluated with the CPU method (§2.5).
+  that label with 0 spot mismatches; formal: Stage B). After a fixed-n run, outside the timing, 256 trial ids from
+  stream purpose `spot` (draws `--spot-from` k … k + 255; the pilot advances k by 256 per earlier check of the same
+  condition) are re-evaluated by the run's own back end and configuration and by the CPU tail method and compared with
+  each other and with the stored bits (§2.5). Pilot: an identity or spot mismatch of a GPU path excludes the path
+  from the rest of the step (`not started (path excluded)`), later steps and all metrics; of a CPU output, it stops
+  the step and the session; a check that cannot finish is `spot_error`. When a label first gets a CPU reference hash,
+  every earlier output of the task is compared with it (`reverify.jsonl`); a mismatch excludes as above. An output
+  checked only by the spot sample is reported as exploratory.
 - **Profiling runs** (exploratory, never timed): `perf stat` cycles, instructions, LLC loads and misses, stalled cycles
   where available; unavailable counters are recorded.
 - **Timeouts** (formal): 3 × the conservative CPU-best projection of the condition; the run is killed and recorded as
@@ -277,8 +282,9 @@ fingerprint (SHA-256 over every tracked code, protocol and task file; results an
 hardware fingerprint (runtime, CPU model, allowed CPUs, quota, RAM, GPU, driver, instance type).
 
 **Runs** (`runs.jsonl`, one line per run): mode, cold kind, condition, configuration and key, position, external
-times, stage timestamps, status (ok / late / timeout / error / width_fail / not_warm / identity_mismatch /
-spot_mismatch), output SHA-256 and identity result, spot mismatches, runner record (device memory fields, transfers,
+times, stage timestamps, status (ok / late / timeout / time box / error / width_fail / not_warm / identity_mismatch /
+spot_mismatch / spot_error / not started (reason)), output SHA-256 and identity result, spot mismatches and the first
+mismatch, the output files with their SHA-256 (`out_manifest`, pilot), runner record (device memory fields, transfers,
 select sub-stage sums, per-worker trials and affinity), cgroup peak, sampler record. **Benches** (`bench.jsonl`):
 point, metadata, configuration, rate, setup, device memory fields, sampler record, or the failure with its stderr.
 
@@ -347,10 +353,21 @@ regression, stream, intervals, CPU gate, item 9, the partial gate on the session
 records its hardware fingerprint, code fingerprint and binaries. A step refuses to run without passed checks of its
 session, or if the hardware, code or binaries differ from them (a new Colab assignment is a new session), a GPU step
 without a path that passed that session's device gate, and any step once the hours are used up ("not started
-(time)"). Hours used count checks, finished steps, and steps cut off without a finish record (up to the last record
-they wrote). Threads, parity and microbatch are chosen per session and used only in that session; values are pooled
+(time)"). Hours used count checks, finished steps, and steps cut off without a finish record (their immutable
+start/heartbeat records, plus one heartbeat interval under the pilot's lost-attempt policy). A step share, including
+`check`, is separate from the whole session's limit; reaching only that share leaves later steps eligible.
+Threads, parity and microbatch are chosen per session and used only in that session; values are pooled
 across sessions only within one hardware fingerprint. The reference build starts only if its conservative projection
 × 1.1 fits the remaining hours; otherwise the per-cell rates and the projection are the result.
+
+**Colab preservation (2026-10-12).** [COLAB_RUNBOOK.md](COLAB_RUNBOOK.md) defines the operator sequence.
+Python dependencies are pinned transitively in `requirements-colab.lock`; setup logs, input bytes, built binaries,
+VM boot ID and occupancy observations accompany the research records. A restored session must pass artifact checks
+before completed work or P0 checks are reused. Checks have a file manifest; each check item has start/end records.
+Priming, fixed-task, reference and deadline outputs have manifests and are mirrored after completion outside timing.
+Missing outputs invalidate metrics without altering raw records. Backup files are replaced only after SHA-256
+readback, and final archives have independent checksum sidecars. Setup/backup occupancy is separate from performance
+E2E and the plan's check/step hours. A new VM uses a new session even with identical hardware specifications.
 
 **Projections (contract).**
 
@@ -379,7 +396,10 @@ this check and be committed; formal steps also require each action's committed P
 
 **Metrics.** `e2e`: task, series, mode (cache-cold, process-cold, warm) and configuration, value = median over all ok
 runs (lower is better). `rate`: task point and configuration, value = median trials/s over ok benches (probes
-excluded; higher is better). `completion`: ok runs / all started runs of the condition, lost runs included (higher is
-better). `spread`: max / min of the ok times (lower is better). A metric may name a session; a label whose sessions ran
+excluded; higher is better). `completion`: ok runs / planned runs of the condition, lost and not-started runs included
+(higher is better; 0 if none finished); ok / started is reported beside it. `spread`: max / min of the ok times (lower
+is better). `e2e` and `spread` exist only for an uncensored condition (every planned run ok); a condition with any
+timeout, time box, lost, failed or unstarted run gives no value and no `best` choice. Excluded GPU paths and sessions
+(output check failures) give no metric. A metric may name a session; a label whose sessions ran
 on different hardware must. The configuration may be a key or `best`, `best-cpu`, `best-gpu` (each machine's own best).
 Gain and verdicts as in the protocol (P4).

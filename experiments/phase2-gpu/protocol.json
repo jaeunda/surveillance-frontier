@@ -584,16 +584,16 @@
    "process-cold": "new process; the page cache could not be dropped. Aggregated separately from cache-cold"
   },
   "steps": {
-   "cpu-baseline": "T1/T2 on both series, cold and warm, CPU with every logical CPU",
+   "cpu-baseline": "T1/T2 on both series, cold and warm, CPU with every CPU the session may use (its starting configuration)",
    "threads": "CPU thread/affinity candidates from the machine's topology, short + sustained design",
    "parity": "CPU parity rule (PC1..PC6, SPEC section 7) at the threads choice; the adopted set enters the CPU configuration of later steps. Before it, the CPU result is the starting configuration, not CPU-best",
-   "rates": "steady-state rates per (series, grid, L) at the chosen CPU configuration and at each validated GPU configuration; inputs of the time projection",
+   "rates": "steady-state rates per (series, grid, L) at the chosen CPU configuration, at each validated GPU configuration, and at the configurations of the session's fixed-task runs (projection check); inputs of the time projection",
    "gpu-rates": "G-inc and G-hyb at a small point and at the representative point, each at microbatch 64 and auto",
    "microbatch": "GPU microbatch sweep up to b_max, with memory records; allocation failures are results",
    "gpu-tasks": "T1/T2 on both series, cold and warm, on each GPU path that passed the device gate",
    "diag": "T-diag points of the calibration split only (N in calibration_n), CPU and validated GPU paths",
    "tref-rates": "steady-state rate of every T-ref cell (projection of the reference build)",
-   "tref-build": "the exact T-ref reference and its oracle, if the available hours allow",
+   "tref-build": "the exact T-ref reference and its oracle, if a CPU projection of the session was verified against an observed warm E2E and the scaled projection fits the available hours",
    "deadline": "deadline behaviour on a small problem (week prefix of 75,600 bars), budgets 2 and 5 s"
   },
   "thread_candidates": "from the observed topology: P-core set (if the P/E mapping is known), all physical cores, all logical CPUs; Colab: within the allocated CPUs. Formal-machine counts are never carried over",
@@ -624,7 +624,7 @@
    "seconds": 5,
    "repetitions": 3
   },
-  "projection_vs_observed": "pilot projections of T1/T2 are compared with the observed warm E2E on the same machine before they are used for T-ref",
+  "projection_vs_observed": "pilot projections of T1/T2 are compared with an uncensored observed warm E2E of the same configuration on the same machine before they are used for T-ref; otherwise they are unverified estimates",
   "never": [
    "pooled with formal launch samples",
    "used to choose m, Delta, tasks, accuracy targets or cells",
@@ -632,8 +632,19 @@
    "held-out T-diag points run",
    "a slow or failed run discarded"
   ],
+  "run_cap": "optional, set in the plan before the first measurement as a recorded reduction (--cut): a fixed-task run (cold run, warm priming, warm request) over run_cap_s is killed and recorded as 'timeout' (censored at the cap); the remaining runs of that condition in the step are recorded as 'not started (run cap)'. A capped condition has no observed E2E; its time is the P2 projection. Optional hours_per_session bounds each session in addition to hours_available",
   "time_box": "every run is bounded by the plan's remaining hours (hours_available minus the time already used by checks and steps, including steps cut off without a finish record); a run cut by it is recorded as 'time box'",
-  "sessions_are_machines": "each session runs its own P0 checks (CPU checks and device gates) and its own threads, parity and microbatch choices; sessions with different hardware fingerprints are never pooled"
+  "sessions_are_machines": "each session runs its own P0 checks (CPU checks and device gates) and its own threads, parity and microbatch choices; sessions with different hardware fingerprints are never pooled",
+  "validity_rules": {
+   "cpu_setup": "per session from its own allowed CPUs, P-core mapping and CPU quota (baseline = every allowed CPU; thread candidates by the topology rule), recorded in cpu-setup.json before its first measurement; GPU host threads and spot checks follow it",
+   "output_checks": "256-trial spot check by the run's own back end and configuration against the CPU tail method and the stored bits; repeated checks of a condition draw further trial ids; a GPU output without a full CPU result hash in the label is exploratory and is compared with that hash once it exists; a spot or identity mismatch excludes the GPU path from later runs and all metrics, a CPU mismatch stops the session; spot_error = verification incomplete",
+   "censoring": "each condition reports planned/started/ok/censored/lost/failed/not-started runs; e2e and spread only for uncensored conditions (every planned run ok); an ok-only median of a censored condition is conditional and never a metric or best choice; the cap is a lower bound; completion = ok / planned (ok / started beside it)",
+   "projection_check": "the rates step also measures the configurations of the session's fixed-task runs; a projection is verified only against an uncensored warm condition of the same configuration and machine; tref-build needs a verified CPU projection in the session, uses the configuration of the T-ref cell rates, and scales the conservative projection by the worst observed/projected ratio above 1",
+   "time": "P0 check items, runs, spot checks and the oracle are bounded by the remaining hours and killed with their process groups; optional step_hours per step and session; time per attempt from start, 60 s heartbeat and finish records (a cut-off attempt counts to its last heartbeat + 60 s)",
+   "failures": "a step is complete only if it returned normally with every planned run recorded; any exception is recorded as failed; outputs of finished runs are listed with SHA-256 and mirrored; missing or changed restored outputs are artifact_missing",
+   "comparison_limits": "cpu-baseline and gpu-tasks use starting configurations (not CPU-best or GPU-best); CPU and GPU steps are not interleaved; direct ratios only within one session, cold kind and validity on uncensored conditions",
+   "sessions": "a further session is added by an amendment before its first run, as a new machine; the total hours do not grow; a paid runtime is a plan change recorded with its expected compute units and price before the run"
+  }
  },
  "scaling": {
   "actions": {
@@ -662,10 +673,10 @@
    "g6e.4xlarge"
   ],
   "metric_kinds": {
-   "e2e": "median end-to-end seconds of ok runs (lower is better)",
+   "e2e": "median end-to-end seconds of the ok runs of an uncensored condition (every planned run ok; lower is better)",
    "rate": "median trials/s of ok benches (higher is better)",
-   "completion": "fraction of the planned runs of a condition that finished ok (higher is better); for an 'environment' action",
-   "spread": "max / min of the ok end-to-end times of a condition (lower is better, >= 1); for an 'environment' action"
+   "completion": "fraction of the planned runs of a condition that finished ok (higher is better; ok / started reported beside it); for an 'environment' action",
+   "spread": "max / min of the ok end-to-end times of an uncensored condition (lower is better, >= 1); for an 'environment' action"
   },
   "verification_before_formal": "every action other than 'none' has its P4 verification record before any formal launch"
  },

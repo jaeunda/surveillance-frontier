@@ -124,7 +124,8 @@ def stage_a(fd):
             r1_ok = False
             continue
         out["used"][i] = {"dir": str(pick)}
-        runs = [r for r in read_jsonl(pick / "runs.jsonl") if r.get("task") in ("T1-curve", "T2-policy-map")]
+        runs = [r for r in read_jsonl(pick / "runs.jsonl") if r.get("task") in ("T1-curve", "T2-policy-map")
+                and r.get("mode") in ("cold", "warm")]  # warm-priming records are outside the timing
         problems = []
         for r in runs:
             good = r.get("status") == "ok" and (r.get("runner") or {}).get("width_ok") and r.get("spot_mismatches") == 0 \

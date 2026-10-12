@@ -115,6 +115,28 @@ order. A CPU result before the parity step is the machine's starting configurati
 
 ## Part I. Pilot on an available machine (P0–P2)
 
+**Colab notebook:** upload [`pilot_colab.ipynb`](pilot_colab.ipynb) to Google Colab, select a GPU runtime, set the label,
+session, the full hash of the source commit to measure (`REPO_REF`, pushed or uploaded as `SOURCE_BUNDLE`), total,
+per-session and per-step hours and the run cap in the first code cell. Follow the [operator runbook](COLAB_RUNBOOK.md):
+the default `RUN_MEASUREMENTS=False` runs P0 only; review its evidence, then enable measurements and run section 6.
+It builds for the assigned GPU, calls the same `pilot.py` harness,
+commits the plan locally, mirrors every record line and every finished run's outputs to Drive as they are written, and
+backs up results and a git bundle to Drive after each step. Use the same label and session 2 at a different time of
+day; complete steps and a passed P0 check on the same hardware are skipped when resuming a session. A reassigned VM is
+a new session, added by an amendment (`AMEND`) and run from P0. Edit [`pilot_colab.py`](pilot_colab.py)
+and regenerate with
+`python3 tools/py2nb.py experiments/phase2-gpu/pilot_colab.py experiments/phase2-gpu/pilot_colab.ipynb`.
+
+**Colab operational preparation (2026-10-12, before measurement).** Python ≥3.12 and the full
+[`requirements-colab.lock`](requirements-colab.lock) are checked in a separate venv. P0 has a default 1 h step share;
+`--step-hours check=H` changes it in a recorded plan/amendment. Exhausting a step's share permits later steps while
+session/total hours remain. A VM boot ID change requires a new session even if the hardware model is unchanged.
+Restore checks cover P0 evidence, run manifests and the repetitions of completed fixed-task steps; missing artifacts
+cannot supply an E2E metric. Setup commands, logs and VM uptime are recorded separately from measurement hours.
+Inputs and actual binaries are retained; Drive copies are checked by SHA-256 readback, and section 8 produces an
+immutable archive plus checksum for an independent second copy. These are operating controls; tasks, repetition
+targets, accuracy, stream and formal verdict rules are unchanged. Actual Colab/CUDA validation remains a P0 task.
+
 | Machine | Profile | What is recorded every session |
 |---|---|---|
 | Lab PC | `lab-desktop`: Core Ultra 5 250K Plus (hybrid P/E cores, 18 logical CPUs), 32 GiB host RAM of which WSL2 sees about 15 GiB, RTX 5060 Ti 8 GB (sm_120), Windows 11 + WSL2 | Free VRAM and other GPU processes, MemAvailable, swap, driver and toolkit, P/E mapping |
@@ -133,8 +155,63 @@ condition run as one block after one untimed priming task. A smaller plan is all
 measurement (`--cut`); later changes are dated amendments made before the run they affect. Every run is kept,
 including slow, failed, late, out-of-memory, timed-out, lost (started without a terminal record) and retried ones.
 Each session reports its own median and range; repetitions on one PC are not independent launches, and no interval
-about hardware is computed from them. Threads, parity and microbatch are chosen per session; sessions on different
-hardware (every Colab reassignment may be) are never pooled. Every run is bounded by the plan's remaining hours.
+about hardware is computed from them.
+
+**Run cap and per-session hours (2026-10-12, before any measurement).** A Colab VM often has 2 vCPUs, on which one CPU
+run of T2 on the week is projected at several hours, so the full repetition plan cannot finish. A plan may therefore
+set, as a recorded reduction (`--cut`), a run cap (`--run-cap-min`): a fixed-task run (cold run, warm priming, warm
+request) over the cap is killed and recorded as `timeout`, censored at the cap, and the remaining runs of that condition
+in the step are recorded as `not started (run cap)`. Such a condition has no observed E2E; its time is the P2
+projection, marked as such. A plan may also bound each session's hours (`--session-hours`) in addition to the total.
+A GPU output whose task has no CPU reference result in the label (because the CPU runs were capped) is checked only by
+the 256-trial spot check; the summary lists the basis of every output identity. The pilot's `parity` step runs the CPU
+gate with item 5 at one length and P24 (as in the device partial gate), bounded by the time box: the full item 5 took
+over 23 minutes per candidate on 18 laptop threads (the partial item 5 took 9 minutes on 2). The pre-freeze calibration and
+every formal gate keep the full item 5. The Colab notebook runs `parity` after the GPU steps, `rates`, `diag`,
+`tref-rates` and `deadline`, so those use the session's threads choice without parity; their configuration keys say so.
+Threads, parity and microbatch are chosen per session; sessions on different hardware (every Colab reassignment may
+be) are never pooled. Every run is bounded by the plan's remaining hours.
+
+**Validity rules of the pilot (2026-10-12, second pre-run review, before any measurement).**
+
+- *Per-session CPU setup.* The plan fixes the rule, not the values: each session derives its CPU baseline and thread
+  candidates from its own allowed CPUs, P-core mapping and CPU quota, and records them (`cpu-setup.json`) before its
+  first measurement. GPU host threads and the spot check follow the session's CPU configuration. A session whose
+  allowed CPUs change is a new session.
+- *Output checks.* The spot check re-evaluates 256 trials of a finished run with the run's own back end and
+  configuration and compares every field with the CPU tail method and the stored bits; further checks of one condition
+  draw further trial ids. It is a sample, not bit identity of the whole output: until the label has a full CPU result
+  hash for the task, a GPU output is *exploratory (spot check only)*, and once the hash exists every earlier output of
+  the task is compared with it. A spot or identity mismatch of a GPU path excludes that path from every later step and
+  from all metrics; a mismatch of a CPU output stops the session. A spot check that cannot finish is `spot_error`
+  (verification incomplete), not ok.
+- *Censoring.* A condition (task, series, cold kind or warm, configuration) is reported with its planned, started, ok,
+  censored, lost, failed and not-started runs. Only an uncensored condition (every planned run ok) has an E2E; the
+  ok-only median of any other condition is a conditional statistic, never a metric or a "best" choice, and the cap is
+  a lower bound on its completion time. Completion is ok / planned runs (also when 0), with ok / started beside it.
+  Warm priming has its own record; unsent warm requests and runs a stopped step did not start are recorded as not
+  started.
+- *Projection check.* The `rates` step also measures the configurations of the session's fixed-task runs (the starting
+  CPU configuration, GPU at the microbatch of that time), so each observed warm E2E has rates on its own configuration.
+  A projection is *verified* only against an uncensored warm condition of the same configuration and machine;
+  otherwise it is an unverified estimate. `tref-build` needs a verified CPU projection in the session; it uses the
+  configuration of the T-ref cell rates (stated if parity was adopted later) and the conservative projection scaled
+  by the worst observed / projected ratio above 1.
+- *Time and failures.* P0 checks, each check item, every run, spot check and the oracle are bounded by the remaining
+  hours, and their process groups are killed at the bound. A plan may give steps a share of a session
+  (`--step-hours`). Time is counted per attempt from its start, heartbeat (every 60 s) and finish records; a cut-off
+  attempt counts to its last heartbeat plus one interval (the summary also gives the lower bound). A step is complete
+  only if it returned normally with every planned run recorded; any exception records it as failed. Every finished
+  run's output files are listed with their SHA-256 and mirrored with the records; a restored output whose files are
+  missing or changed is `artifact_missing` (records are never altered).
+- *Comparison limits.* `cpu-baseline` is the starting CPU configuration and `gpu-tasks` uses the microbatch of that
+  time, so neither is CPU-best or GPU-best; the CPU and GPU steps are not interleaved, so time of day and host load are
+  confounded with the device. A direct ratio uses only the same session, cold kind and validity, uncensored conditions.
+  The threads choice at week/P24 is not CPU-best for other workloads. Colab sessions are not independent hardware
+  samples, and a CPU timeout on a Colab VM does not establish a general GPU advantage.
+- *Sessions and cost.* A session beyond the plan is added by an amendment before its first run, as a new machine
+  (P0 and all steps again); the plan's total hours do not grow. A paid Colab runtime is a plan change recorded with its
+  expected compute units and price before the run.
 
 **Measurement in the pilot.** The harness times from just before spawn to process exit after the output fsync, with
 the runner's S0–S8 stamps for the breakdown (initialisation, transfer, loop, output). If the page cache cannot be dropped
@@ -166,7 +243,8 @@ not dropped from the formal comparison on that basis, and the pilot never runs t
 The action is one of: **none** (report the pilot; formal H3/H4 "not measured (no scaling)"), **environment**
 (a controllable machine of a similar class: repeatable launches, controlled cold state), **cpu-host** (a larger CPU or
 GPU host), **gpu** (a different or larger GPU). Each action names its metrics before any paid run: e2e and rate for
-speed; completion (ok runs / started runs) and spread (max / min time) for an environment action, whose claim is
+speed; completion (ok runs / planned runs, ok / started beside it) and spread (max / min time of an uncensored
+condition) for an environment action, whose claim is
 control, not speed. Every e2e-type metric names its cold kind, and P4 re-runs the same kind (a process-cold baseline
 is verified process-cold). Projections use
 

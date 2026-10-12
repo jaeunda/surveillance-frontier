@@ -88,6 +88,13 @@ cmake -S . -B build && cmake --build build -j && ./build/sf_test
 Data download, the reproduction gate, and the CPU sweep are described in
 [`experiments/phase1-feasibility/`](experiments/phase1-feasibility/README.md).
 
+**Phase 2 pilot (Colab).** Upload [`experiments/phase2-gpu/pilot_colab.ipynb`](experiments/phase2-gpu/pilot_colab.ipynb)
+to Google Colab, select a GPU runtime, set the label, session, the pushed commit to measure (`REPO_REF`), available
+hours and run cap. The default run stops at P0; inspect the device checks, then set `RUN_MEASUREMENTS=True` and run
+section 6. A source bundle can be uploaded instead of fetching a pushed commit. Follow the
+[Colab runbook](experiments/phase2-gpu/COLAB_RUNBOOK.md) for setup, interruption, restore, success criteria and verified
+archives of the raw outputs and logs. Run session 2 at a different time of day with the same label.
+
 **Phase 0 pilot.** Open [`experiments/phase0-pilot/pilot.ipynb`](experiments/phase0-pilot/pilot.ipynb) in Google
 Colab, select a **T4 GPU** runtime, and run all cells. To edit the notebook, change the `.py` source and regenerate:
 

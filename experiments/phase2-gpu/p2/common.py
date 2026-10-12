@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]  # experiments/phase2-gpu
@@ -48,13 +49,33 @@ def write_json(path, obj):
 
 def append_jsonl(path, rec):
     """One record per line, appended and fsynced at once (callers write a 'started' record before a run and the
-    terminal record after it, so a run cut off by an interruption still leaves its start)."""
+    terminal record after it, so a run cut off by an interruption still leaves its start). If SF_MIRROR_FROM and
+    SF_MIRROR_TO are set, a record of a file under SF_MIRROR_FROM is also appended to the same relative path under
+    SF_MIRROR_TO (e.g. Drive on Colab, so a lost VM still leaves its records); appends never happen inside a timed
+    region. SF_REQUIRE_MIRROR=1 makes a mirror failure fatal after preserving the local line (Colab research runs);
+    otherwise it is reported as a warning."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(rec, default=str) + "\n"
     with open(path, "a") as f:
-        f.write(json.dumps(rec, default=str) + "\n")
+        f.write(line)
         f.flush()
         os.fsync(f.fileno())
+    src, dst = os.environ.get("SF_MIRROR_FROM"), os.environ.get("SF_MIRROR_TO")
+    if src and dst:
+        try:
+            rel = path.resolve().relative_to(Path(src).resolve())
+        except ValueError:
+            return
+        try:
+            m = Path(dst) / rel
+            m.parent.mkdir(parents=True, exist_ok=True)
+            with open(m, "a") as f:
+                f.write(line)
+        except OSError as e:
+            if os.environ.get("SF_REQUIRE_MIRROR") == "1":
+                raise OSError(f"Required record mirror failed: {dst}") from e
+            print(f"warning: record mirror {dst} failed: {e}", file=sys.stderr)
 
 
 def read_jsonl(path):
@@ -71,13 +92,72 @@ def sh(cmd, timeout=120):
         return None
 
 
-def run_logged(cmd, log, **kw):
-    """Run a command from the repository root and append its command line, output and exit code to log."""
-    r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, cwd=ROOT, **kw)
+def run_logged(cmd, log, timeout=None):
+    """Run a command from the repository root in its own process group and append its command line, output and exit
+    code to log. With a timeout the whole group (children included) is killed when it expires and
+    subprocess.TimeoutExpired is raised after the log is written; an interrupt kills the group too."""
+    cmd = [str(c) for c in cmd]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT,
+                            start_new_session=True)
+    expired, interrupted = False, None
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        expired = True
+        _killpg(proc)
+        out, err = proc.communicate()
+    except BaseException as exc:
+        interrupted = exc
+        _killpg(proc)
+        out, err = proc.communicate()
     Path(log).parent.mkdir(parents=True, exist_ok=True)
     with open(log, "a") as f:
-        f.write(f"$ {' '.join(map(str, cmd))}\n{r.stdout}\n{r.stderr}\nexit {r.returncode}\n")
-    return r
+        f.write(f"$ {' '.join(cmd)}\n{out}\n{err}\n{'killed at timeout ' + str(timeout) + ' s' if expired else ''}"
+                f"\nexit {proc.returncode}; interrupted={type(interrupted).__name__ if interrupted else None}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    if interrupted is not None:
+        raise interrupted
+    if expired:
+        raise subprocess.TimeoutExpired(cmd, timeout, out, err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def _killpg(proc):
+    try:
+        os.killpg(proc.pid, 9)
+    except OSError:
+        pass
+
+
+def manifest(path):
+    """{relative file: SHA-256} of every file under a run's output directory (the artifact a record refers to)."""
+    path = Path(path)
+    if not path.is_dir():
+        return {}
+    return {str(f.relative_to(path)): sha256_file(f) for f in sorted(path.rglob("*")) if f.is_file()}
+
+
+def mirror_tree(path):
+    """Copy a finished directory under SF_MIRROR_FROM to the same relative path under SF_MIRROR_TO (outside any
+    timed region), so a lost VM keeps the outputs of every finished run, not only its records. Returns True if
+    copied; SF_REQUIRE_MIRROR=1 propagates failure, otherwise a failure is reported as a warning."""
+    import shutil
+    src, dst = os.environ.get("SF_MIRROR_FROM"), os.environ.get("SF_MIRROR_TO")
+    if not (src and dst) or not Path(path).is_dir():
+        return False
+    try:
+        rel = Path(path).resolve().relative_to(Path(src).resolve())
+    except ValueError:
+        return False
+    try:
+        shutil.copytree(path, Path(dst) / rel, dirs_exist_ok=True)
+        return True
+    except OSError as e:
+        if os.environ.get("SF_REQUIRE_MIRROR") == "1":
+            raise OSError(f"Required output mirror failed: {dst}") from e
+        print(f"warning: output mirror {dst} failed: {e}", file=sys.stderr)
+        return False
 
 
 def git_state():
@@ -97,7 +177,7 @@ def committed_unchanged(path):
 # Files whose content defines what is measured: the engine, the build, the experiment code, the protocol, the tasks.
 # Documentation and results are not part of it.
 CODE_PATHS = ["CMakeLists.txt", "engine", "experiments/phase2-gpu"]
-CODE_SUFFIXES = (".cpp", ".hpp", ".cu", ".inl", ".h", ".txt", ".py", ".sh", ".json", ".cmake")
+CODE_SUFFIXES = (".cpp", ".hpp", ".cu", ".inl", ".h", ".txt", ".py", ".sh", ".json", ".cmake", ".lock")
 
 
 def code_fingerprint():

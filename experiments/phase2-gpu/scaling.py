@@ -39,8 +39,9 @@ def cmd_draft(a):
         s = read_json(d / "pilot-summary.json")
         pilots.append({"label": label, "machine": s["machine"], "summary_sha256": sha256_file(d / "pilot-summary.json"),
                        "sessions": len(s["sessions"]), "hours_used": s["hours_used"],
-                       "observations": {k: s[k] for k in ("e2e", "microbatch", "projections", "tref_runs", "deadline",
-                                                          "decisions")},
+                       "observations": {k: s.get(k) for k in ("e2e", "microbatch", "projections", "tref_runs",
+                                                              "deadline", "decisions", "identity", "excluded",
+                                                              "artifacts", "comparison_limits")},
                        "failures": s["failures"],
                        "environment": {k: {kk: v.get(kk) for kk in ("runtime", "gpu", "cpu_model", "meminfo",
                                                                      "capabilities")}

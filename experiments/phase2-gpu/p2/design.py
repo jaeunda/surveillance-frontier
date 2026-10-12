@@ -6,6 +6,7 @@ import json
 import math
 import random
 import statistics
+import subprocess
 from pathlib import Path
 
 from . import harness
@@ -89,14 +90,18 @@ def choose(series, grid, candidates, log, *, build, label, seed=0):
 PARITY_POINTS = ["week_P24_L32", "week_P1_L2", "quarter_P24_L256"]
 
 
-def parity(cpu_cfg, log, md_path, *, build, min_gain, seed=0):
+def parity(cpu_cfg, log, md_path, *, build, min_gain, seed=0, partial_gate=False):
     """CPU parity rule: PC1..PC6 in order; a candidate is adopted if the CPU gate passes with it and the geometric
     mean of the three points' median throughput (3 x 5 s each) rises by >= min_gain. The adopted set so far and the
     candidate set are measured interleaved (rounds of both, seeded order) so drift does not favour either. The 2%
-    threshold is a registered selection rule, not a test. Returns the adopted set."""
+    threshold is a registered selection rule, not a test. Returns the adopted set.
+
+    partial_gate (pilot): gate item 5 at one length and P24 (sf_gate --partial), as in the device partial gate; the full
+    item 5 takes hours on a few-CPU pilot machine. The gate is bounded by the caller's time box (harness.TimeBox)."""
     adopted = []
     rng = random.Random(seed)
-    lines = ["# CPU parity log", "", f"Configuration: {harness.config_key(cpu_cfg)}; seed {seed}", "",
+    lines = ["# CPU parity log", "", f"Configuration: {harness.config_key(cpu_cfg)}; seed {seed}; gate items 1, 5, 7"
+             f"{' (item 5 partial: one length, P24)' if partial_gate else ''}", "",
              "| Candidate | Gate | Geo-mean gain | Decision | Reason |", "|---|---|---|---|---|"]
 
     def compare(before_set, after_set):
@@ -121,9 +126,16 @@ def parity(cpu_cfg, log, md_path, *, build, min_gain, seed=0):
                          "and cells; there is no variant without it |")
             continue
         trial = adopted + [pc]
-        gate = run_logged([Path(build) / "sf_gate", "--device", "cpu", "--threads", cpu_cfg["threads"], "--parity",
-                           ",".join(trial), "--items", "1,5,7", "--out", Path(log).with_suffix(f".gate_{pc}.json")],
-                          Path(log).with_suffix(".gate.log")).returncode == 0
+        left = harness.time_left_s()
+        if left is not None and left <= 0:
+            raise harness.TimeBox("time box used up before the parity gate")
+        try:
+            gate = run_logged([Path(build) / "sf_gate", "--device", "cpu", "--threads", cpu_cfg["threads"], "--parity",
+                               ",".join(trial), *(["--partial"] if partial_gate else []), "--items", "1,5,7", "--out",
+                               Path(log).with_suffix(f".gate_{pc}.json")], Path(log).with_suffix(".gate.log"),
+                              timeout=left).returncode == 0
+        except subprocess.TimeoutExpired:
+            raise harness.TimeBox(f"time box reached during the parity gate of {pc}") from None
         before, after = compare(adopted, trial)
         gain = after / before - 1 if before and after else None
         adopt = bool(gate and gain is not None and gain >= min_gain)

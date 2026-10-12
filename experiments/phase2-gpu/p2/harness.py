@@ -32,7 +32,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .common import ROOT, append_jsonl, fresh_dir
+from .common import ROOT, append_jsonl, fresh_dir, mirror_tree
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 OMP_ENV = {"OMP_PLACES": "cores", "OMP_PROC_BIND": "spread"}
@@ -288,6 +288,28 @@ class Sampler:
 
 # ---- runs ----
 
+def _kill_group(proc):
+    """SIGKILL a runner started in its own session (setsid), then reap it."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    proc.wait()
+
+
+def save_console(run_id, command, out, err):
+    """Full console evidence, after process exit and outside measurement timing (also on malformed replies)."""
+    if ATTEMPT_LOG is None:
+        return None
+    d = Path(ATTEMPT_LOG).parent / "logs" / str(run_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "command.json").write_text(json.dumps([str(x) for x in command]) + "\n")
+    (d / "stdout.log").write_text(out)
+    (d / "stderr.log").write_text(err)
+    mirror_tree(d)
+    return str(d)
+
+
 def _stages(out_dir):
     try:
         return json.loads((Path(out_dir) / "stages.json").read_text())
@@ -348,14 +370,22 @@ def run_cold(task, out_dir, config, condition=None, *, build, timeout_s=None, ex
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT, env=env,
                                     preexec_fn=cg.preexec())
             try:
-                _, err = proc.communicate(timeout=eff_timeout)
+                out, err = proc.communicate(timeout=eff_timeout)
                 t1 = time.monotonic_ns()
                 status = "ok" if proc.returncode == 0 else ("width_fail" if proc.returncode == 3 else "error")
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
-                _, err = proc.communicate()
+                out, err = proc.communicate()
                 t1 = t0 + int(eff_timeout * 1e9)  # censored at exactly the timeout
                 status = "time box" if boxed else "timeout"
+            except BaseException:
+                _kill_group(proc)  # an interrupt must not leave the runner (own session) running into later runs
+                out, err = proc.communicate()
+                (out_dir / "stdout.log").write_text(out)
+                (out_dir / "stderr.log").write_text(err)
+                raise
+        (out_dir / "stdout.log").write_text(out)
+        (out_dir / "stderr.log").write_text(err)
         if deadline is not None and status == "ok" and t1 > deadline:
             status = "late"
         rec = _record(kind, condition, config, cmd, t0, t1, status, out_dir,
@@ -378,14 +408,18 @@ class WarmServer:
         self.config = config
         self.sock = str(Path(tempfile.gettempdir()) / f"sf_run_{uuid.uuid4().hex[:8]}.sock")
         self.cg = Cgroup()
+        self.console_id = "warm-server-" + uuid.uuid4().hex
         prefix, env = launcher(config)
         self.proc = subprocess.Popen([*prefix, str(Path(build) / "sf_run"), "--serve", self.sock, *sf_args(config)],
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=ROOT, env=env,
                                      preexec_fn=self.cg.preexec())
         line = self.proc.stdout.readline()
+        self.greeting = line
         if "serving" not in line:
             self.kill()
-            raise RuntimeError(f"warm server did not start: {line} {self.proc.stderr.read()[-2000:]}")
+            out, err = self.proc.stdout.read(), self.proc.stderr.read()
+            save_console(self.console_id, self.proc.args, line + out, err)
+            raise RuntimeError(f"warm server did not start: {line} {err[-2000:]}")
 
     def kill(self):
         try:
@@ -411,17 +445,27 @@ class WarmServer:
             s.close()
         return json.loads(buf.decode())
 
-    def prime(self, task, out_dir, timeout_s=None):
-        """A first task outside the timing; its base-state key matches the timed task."""
-        eff, _ = bounded(timeout_s)
+    def prime(self, task, out_dir, condition=None, timeout_s=None):
+        """A first task outside the timing; its base-state key matches the timed task. Like every run it has a
+        'started' record (kind 'priming') and returns its terminal record: status ok, 'timeout'/'time box' (the server
+        is then killed) or 'error'."""
+        condition = condition or {}
+        eff, boxed = bounded(timeout_s)
+        run_id = started("priming", condition, self.config)
+        rec = {"mode": "warm-priming", **condition, "run_id": run_id, "config": self.config,
+               "config_key": config_key(self.config), "timeout_s": eff, "out": str(Path(out_dir).resolve())}
+        t0 = time.monotonic_ns()
         try:
             r = self.request({"task": str(Path(task).resolve()), "out": str(fresh_dir(Path(out_dir).resolve()))}, eff)
+            rec.update({"status": "ok" if r.get("status") == "ok" else "error", "reply": r})
         except socket.timeout:
             self.kill()
-            raise RuntimeError(f"warm priming exceeded {eff} s; server stopped") from None
-        if r.get("status") != "ok":
-            raise RuntimeError(f"warm priming failed: {r}")
-        return r
+            rec.update({"status": "time box" if boxed else "timeout", "error": f"priming exceeded {eff} s; server stopped"})
+        except (OSError, ValueError) as e:
+            rec.update({"status": "error", "error": repr(e)})
+        rec.update({"e2e_s": (time.monotonic_ns() - t0) / 1e9,
+                    "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+        return rec
 
     def timed(self, task, out_dir, condition=None, expected_sha=None, timeout_s=None):
         condition = condition or {}
@@ -463,33 +507,50 @@ class WarmServer:
                 self.proc.wait(timeout=WARM_CONTROL_TIMEOUT_S)
             except (OSError, subprocess.TimeoutExpired, ValueError):
                 self.kill()
+        save_console(self.console_id, self.proc.args, self.greeting + self.proc.stdout.read(), self.proc.stderr.read())
+        self.proc.stdout.close()
+        self.proc.stderr.close()
         self.cg.remove()
 
 
 def warm_block(config, task, out, reps, condition, *, build, expected_sha=None, timeout_s=None, prime_timeout_s=None,
                on_record):
     """One warm block: priming outside the timing, then reps timed requests. on_record(rec) is called for each record
-    as soon as it exists (so a block cut off later keeps its earlier runs). A failure to start or prime is one record
-    with status 'error'; a request that times out ends the block (the server is gone)."""
+    as soon as it exists (so a block cut off later keeps its earlier runs). The priming has its own record (mode
+    'warm-priming'). If the server does not start, the priming fails, or a request ends the server (timeout), every
+    timed request not sent is recorded as 'not started (...)' with its rep, so the block's planned requests are all
+    accounted for."""
+
+    def not_started(first, why):
+        for r in range(first, reps):
+            on_record({"mode": "warm", **condition, "rep": r, "config": config, "config_key": config_key(config),
+                       "status": f"not started ({why})", "runs_not_started": 1,
+                       "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+
     try:
         srv = WarmServer(config, build=build)
     except (RuntimeError, OSError) as e:
-        on_record({"mode": "warm", **condition, "config": config, "config_key": config_key(config), "status": "error",
-                   "error": repr(e)})
+        on_record({"mode": "warm-priming", **condition, "config": config, "config_key": config_key(config),
+                   "status": "error", "error": f"server start: {e!r}"})
+        not_started(0, "warm server did not start")
         return
     try:
-        try:
-            srv.prime(task, Path(f"{out}_prime"), prime_timeout_s)
-        except (RuntimeError, OSError, ValueError) as e:
-            on_record({"mode": "warm", **condition, "config": config, "config_key": config_key(config),
-                       "status": "error", "error": f"priming: {e!r}"})
+        p = srv.prime(task, Path(f"{out}_prime"), condition, prime_timeout_s)
+        p["priming_timed_out"] = p["status"] in ("timeout", "time box")
+        on_record(p)
+        if p["status"] != "ok":
+            not_started(0, f"priming {p['status']}")
             return
         for r in range(reps):
             rec = srv.timed(task, Path(f"{out}_w{r}"), {**condition, "rep": r}, expected_sha=expected_sha,
                             timeout_s=timeout_s)
             on_record(rec)
             if not srv.alive:
+                not_started(r + 1, f"warm server ended after {rec.get('status')}")
                 return
+    except BaseException:
+        srv.kill()  # an interrupt or a time box: do not wait for the server to finish its request
+        raise
     finally:
         srv.close()
 
@@ -514,9 +575,16 @@ def bench(task, config, seconds, *, build, sample=False, diag=False):
             os.killpg(proc.pid, signal.SIGKILL)
             out, err = proc.communicate()
             timed_out = True
+        except BaseException:
+            _kill_group(proc)
+            out, err = proc.communicate()
+            save_console(run_id, cmd, out, err)
+            raise
+    console_dir = save_console(run_id, cmd, out, err)
     rec = {"task": str(Path(task).relative_to(ROOT)) if Path(task).is_absolute() else str(task), "config": config,
            "config_key": config_key(config), "seconds": seconds, "returncode": proc.returncode, "sampler": smp.record(),
-           "run_id": run_id, "finished_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+           "run_id": run_id, "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+           "stdout": out, "stderr": err, "console_dir": console_dir}
     if timed_out:
         rec.update({"status": "time box" if boxed else "timeout", "timeout_s": eff, "trials_per_s": None,
                     "stderr_tail": err[-2000:]})

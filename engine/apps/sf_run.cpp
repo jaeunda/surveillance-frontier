@@ -5,7 +5,7 @@
 //   sf_run TASK --out DIR --deadline-ns T --drain-ms M [...]         deadline (H4): T is absolute CLOCK_MONOTONIC
 //   sf_run --serve SOCKET [backend options]                          warm: persistent, one JSON request per line
 //   sf_run TASK --bench SECONDS [--diag] [backend options]           steady-state throughput (calibration, T-diag)
-//   sf_run TASK --spot DIR [backend options]                         spot verification of a finished fixed-n run
+//   sf_run TASK --spot DIR [--spot-from K] [backend options]         spot verification of a finished fixed-n run
 //   sf_run --cp N,ALPHA                                              Clopper-Pearson bounds for k = 0..N (CSV), for
 //                                                                    the SciPy cross-check (check_intervals.py)
 //
@@ -75,6 +75,7 @@ struct Options {
   int64_t deadline_ns = 0, drain_ms = 0, warmup = 0, chunk = 65536;
   double bench = 0;
   int64_t replicate = -1;
+  int64_t spot_from = 0;  // first draw index of the spot sample (a repeated check draws further ids)
   std::string cp;
 };
 
@@ -94,6 +95,7 @@ Options parse(int argc, char** argv) {
     else if (a == "--out") o.out = v;
     else if (a == "--serve") o.serve = v;
     else if (a == "--spot") o.spot = v;
+    else if (a == "--spot-from") o.spot_from = std::atoll(v.c_str());
     else if (a == "--threads") o.cfg.threads = std::atoi(v.c_str());
     else if (a == "--path") o.cfg.path = v;
     else if (a == "--microbatch") o.cfg.microbatch = v == "auto" ? 0 : std::atoll(v.c_str());
@@ -123,7 +125,7 @@ Options parse(int argc, char** argv) {
     } else fail("unknown option " + a);
   }
   if (!backend_available(o.device)) fail("back end not available in this build: " + o.device);
-  if (o.cfg.threads < 1 || o.chunk < 1) fail("invalid options");
+  if (o.cfg.threads < 1 || o.chunk < 1 || o.spot_from < 0) fail("invalid options");
   return o;
 }
 
@@ -576,8 +578,8 @@ int bench(const Options& o) {
   return 0;
 }
 
-// Spot verification (SPEC §2.5): 256 trial ids from purpose spot, re-evaluated by the run's back end and by the CPU
-// tail method, compared in all fields with each other and with the stored bits.
+// Spot verification (SPEC §2.5): 256 trial ids from purpose spot (draws spot_from .. spot_from + 255), re-evaluated by
+// the run's back end and by the CPU tail method, compared in all fields with each other and with the stored bits.
 int spot(const Options& o) {
   const Task t = load_task(o.task);
   Prepared p;
@@ -598,7 +600,8 @@ int spot(const Options& o) {
   const StreamKey key{t.task_code, t.series_code, 0, 0, kPurposeSpot};
   for (int i = 0; i < kSpot; ++i) {
     uint64_t g;
-    if (!stream_draw(key, i, static_cast<uint64_t>(sp.total), g)) fail("spot draw failed");
+    if (!stream_draw(key, static_cast<uint64_t>(o.spot_from + i), static_cast<uint64_t>(sp.total), g))
+      fail("spot draw failed");
     ids[i] = static_cast<int64_t>(g);
     int64_t j;
     resolve_trial(sp, ids[i], cells[i], j, starts[i]);
@@ -635,7 +638,7 @@ int spot(const Options& o) {
     }
   }
   std::ostringstream j;
-  j << "{\"spot_trials\":" << kSpot << ",\"mismatches\":" << mismatches << ",\"first\":" << json_quote(first)
+  j << "{\"spot_trials\":" << kSpot << ",\"spot_from\":" << o.spot_from << ",\"mismatches\":" << mismatches << ",\"first\":" << json_quote(first)
     << ",\"device\":" << json_quote(o.device) << ",\"config\":" << json_quote(o.cfg.describe()) << "}\n";
   write_file(o.spot + "/spot.json", j.str());
   fsync_path(o.spot, true);
